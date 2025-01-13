@@ -1,0 +1,783 @@
+Below is a modified version of the same demonstration client which removes the custom SMB2_REMOTE_EXEC command (0x9999) and instead uses only standard SMB2 commands. This adheres more closely to the SMB2 spec (though still in a very incomplete way) and is still not production quality.
+
+In this example, the code:
+	1.	Negotiates an SMB2 connection.
+	2.	Sets up a session (no real auth).
+	3.	Connects to a share (Tree Connect).
+	4.	Creates a file on the share (using SMB2_CREATE).
+	5.	Optionally writes data to that file (SMB2_WRITE).
+	6.	Then reads back the file contents (SMB2_READ).
+	7.	Closes the file handle (partial demonstration; real SMB2 also does Close).
+
+	Warning / Disclaimer
+This remains educational demonstration code. It is still incomplete, insecure, and omits critical features (e.g., robust authentication, signing, encryption, parameter checks, error handling). Do not use in production or on networks/systems you do not own. Using such code improperly can be illegal or unethical. Always follow your local laws and get proper authorization.
+
+/***************************************************
+* File: smb2_standard_client.c
+*
+* A basic SMB2 client that demonstrates:
+*   1. Connecting to an SMB2 server.
+*   2. Sending SMB2_NEGOTIATE, SMB2_SESSION_SETUP,
+*      SMB2_TREE_CONNECT requests.
+*   3. Creating a file (SMB2_CREATE).
+*   4. Writing data to the file (SMB2_WRITE).
+*   5. Reading data from the file (SMB2_READ).
+*
+* NOTE: This code is still highly simplified and
+*       insecure. It does NOT do real authentication
+*       or advanced SMB2 features.
+*
+* COMPILATION (Linux example):
+*   gcc -o smb2_standard_client smb2_standard_client.c
+*
+* RUN (example):
+*   ./smb2_standard_client 192.168.1.100 445 \\MyShare testfile.txt "Hello world"
+***************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <stdint.h>
+#include <errno.h>
+#include <time.h>
+
+#pragma pack(push, 1)
+
+//--------------------------------------------------
+//                  SMB2 Header
+//--------------------------------------------------
+typedef struct _SMB2Header {
+    unsigned char  ProtocolId[4];  // 0xFE 'S' 'M' 'B'
+    uint16_t       StructureSize;  // Always 64 for SMB2
+    uint16_t       CreditCharge;   // Credits requested/charged
+    uint32_t       Status;         // For responses, server sets status
+    uint16_t       Command;        // SMB2 command code
+    uint16_t       Credits;        // Credits granted/requested
+    uint32_t       Flags;          // SMB2 header flags
+    uint32_t       NextCommand;    // Offset to next command in compound
+    uint64_t       MessageId;      // Unique message ID
+    uint32_t       Reserved;       // Usually 0
+    uint32_t       TreeId;         // Tree ID
+    uint64_t       SessionId;      // Session ID
+    unsigned char  Signature[16];  // For signing (unused here)
+} SMB2Header;
+
+//--------------------------------------------------
+//             Standard SMB2 Commands
+//--------------------------------------------------
+#define SMB2_NEGOTIATE       0x0000
+#define SMB2_SESSION_SETUP   0x0001
+#define SMB2_TREE_CONNECT    0x0003
+#define SMB2_CREATE          0x0005
+#define SMB2_CLOSE           0x0006
+#define SMB2_READ            0x0008
+#define SMB2_WRITE           0x0009
+
+//--------------------------------------------------
+//               Some SMB2 Status Codes
+//--------------------------------------------------
+#define STATUS_SUCCESS                0x00000000
+#define STATUS_INVALID_PARAMETER      0xC000000D
+#define STATUS_INVALID_DEVICE_REQUEST 0xC0000010
+#define STATUS_NOT_SUPPORTED          0xC00000BB
+
+//--------------------------------------------------
+//                   SMB2 Dialects
+//--------------------------------------------------
+#define SMB2_DIALECT_0202    0x0202
+#define SMB2_DIALECT_0210    0x0210
+#define SMB2_DIALECT_0300    0x0300
+
+//--------------------------------------------------
+//        Minimal Structures for Basic SMB2
+//--------------------------------------------------
+
+// For a minimal NegotiateRequest (cmd=0x0000)
+typedef struct _SMB2NegotiateRequest {
+    uint16_t StructureSize;  // Must be 36
+    uint16_t DialectCount;
+    uint16_t SecurityMode;
+    uint16_t Reserved;
+    uint32_t Capabilities;
+    uint64_t ClientGuid;     // Simplified to 8 bytes here
+    uint32_t NegotiateContextOffset; // For SMB 3.x
+    uint16_t NegotiateContextCount;
+    uint16_t Reserved2;
+    // Then dialect array
+} SMB2NegotiateRequest;
+
+// Minimal NegotiateResponse (cmd=0x0000)
+typedef struct _SMB2NegotiateResponse {
+    uint16_t StructureSize; // Must be 65 in real SMB2
+    uint16_t SecurityMode;
+    uint16_t DialectRevision;
+    uint16_t NegotiateContextCount;
+    uint32_t ServerGuid;    // Simplified
+    uint32_t Capabilities;
+    uint32_t MaxTransSize;
+    uint32_t MaxReadSize;
+    uint32_t MaxWriteSize;
+    uint64_t SystemTime;
+    uint64_t ServerStartTime;
+    // etc.
+} SMB2NegotiateResponse;
+
+// Minimal SessionSetupRequest (cmd=0x0001)
+typedef struct _SMB2SessionSetupRequest {
+    uint16_t StructureSize;  // Must be 25
+    uint8_t  Flags;
+    uint8_t  SecurityMode;
+    uint32_t Capabilities;
+    uint32_t Channel;
+    uint16_t SecurityBufferOffset;
+    uint16_t SecurityBufferLength;
+    // Security buffer follows...
+} SMB2SessionSetupRequest;
+
+// Minimal SessionSetupResponse (cmd=0x0001)
+typedef struct _SMB2SessionSetupResponse {
+    uint16_t StructureSize; // Must be 9
+    uint16_t SessionFlags;
+    uint16_t SecurityBufferOffset;
+    uint16_t SecurityBufferLength;
+    // etc.
+} SMB2SessionSetupResponse;
+
+// Minimal TreeConnectRequest (cmd=0x0003)
+typedef struct _SMB2TreeConnectRequest {
+    uint16_t StructureSize;  // Must be 9
+    uint16_t Reserved;
+    uint32_t PathOffset;
+    uint32_t PathLength;
+    // Path follows...
+} SMB2TreeConnectRequest;
+
+// Minimal TreeConnectResponse (cmd=0x0003)
+typedef struct _SMB2TreeConnectResponse {
+    uint16_t StructureSize; // Must be 16
+    uint8_t  ShareType;
+    uint8_t  Reserved;
+    uint32_t ShareFlags;
+    uint32_t Capabilities;
+    uint32_t MaximalAccess;
+} SMB2TreeConnectResponse;
+
+// Minimal CreateRequest (cmd=0x0005)
+typedef struct _SMB2CreateRequest {
+    uint16_t StructureSize;     // Must be 57
+    uint8_t  SecurityFlags;
+    uint8_t  RequestedOplockLevel;
+    uint32_t ImpersonationLevel;
+    uint64_t SmbCreateFlags;
+    uint64_t Reserved;
+    uint32_t DesiredAccess;
+    uint32_t FileAttributes;
+    uint32_t ShareAccess;
+    uint32_t CreateDisposition;
+    uint32_t CreateOptions;
+    uint16_t NameOffset;
+    uint16_t NameLength;
+    uint32_t CreateContextsOffset;
+    uint32_t CreateContextsLength;
+    // Filename follows...
+} SMB2CreateRequest;
+
+// Minimal CreateResponse (cmd=0x0005)
+typedef struct _SMB2CreateResponse {
+    uint16_t StructureSize; // Must be 89 in real SMB2
+    uint8_t  OplockLevel;
+    uint8_t  Flags;
+    uint32_t CreateAction;
+    uint64_t CreationTime;
+    uint64_t LastAccessTime;
+    uint64_t LastWriteTime;
+    uint64_t ChangeTime;
+    uint64_t AllocationSize;
+    uint64_t EndofFile;
+    uint32_t FileAttributes;
+    // 16-byte FileId
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+    // plus optional create contexts
+} SMB2CreateResponse;
+
+// Minimal WriteRequest (cmd=0x0009)
+typedef struct _SMB2WriteRequest {
+    uint16_t StructureSize; // Must be 49
+    uint16_t DataOffset;
+    uint32_t Length;
+    uint64_t Offset;
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+    uint32_t Channel;
+    uint32_t RemainingBytes;
+    uint16_t WriteChannelInfoOffset;
+    uint16_t WriteChannelInfoLength;
+    uint32_t Flags;
+    // Then the data to write
+} SMB2WriteRequest;
+
+// Minimal WriteResponse (cmd=0x0009)
+typedef struct _SMB2WriteResponse {
+    uint16_t StructureSize; // Must be 17
+    uint16_t Reserved;
+    uint32_t Count;
+    uint32_t Remaining;
+    uint16_t WriteChannelInfoOffset;
+    uint16_t WriteChannelInfoLength;
+} SMB2WriteResponse;
+
+// Minimal ReadRequest (cmd=0x0008)
+typedef struct _SMB2ReadRequest {
+    uint16_t StructureSize; // Must be 49
+    uint8_t  Padding;
+    uint8_t  Reserved;
+    uint32_t Length;
+    uint64_t Offset;
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+    uint32_t MinimumCount;
+    uint32_t Channel;
+    uint32_t RemainingBytes;
+    uint16_t ReadChannelInfoOffset;
+    uint16_t ReadChannelInfoLength;
+} SMB2ReadRequest;
+
+// Minimal ReadResponse (cmd=0x0008)
+typedef struct _SMB2ReadResponse {
+    uint16_t StructureSize; // Must be 17
+    uint8_t  DataOffset;
+    uint8_t  Reserved;
+    uint32_t DataLength;
+    uint32_t DataRemaining;
+    uint32_t Reserved2;
+    // Followed by the actual data
+} SMB2ReadResponse;
+
+#pragma pack(pop)
+
+//--------------------------------------------------
+//       Simple Helpers / Global State
+//--------------------------------------------------
+static uint64_t gMessageId = 1;       // We'll increment for each request
+static uint64_t gSessionId = 0;       // Set by Session Setup response
+static uint32_t gTreeId    = 0;       // Set by Tree Connect response
+static int gSock           = -1;      // Global for the connection
+
+//--------------------------------------------------
+// Utility: Send an SMB2 header + optional payload
+//--------------------------------------------------
+int sendSMB2Request(SMB2Header *hdr, const void *payload, size_t payloadLen) {
+    // First send the header
+    ssize_t sent = send(gSock, hdr, sizeof(SMB2Header), 0);
+    if (sent < 0) {
+        perror("send header");
+        return -1;
+    }
+    // Then the payload (if any)
+    if (payload && payloadLen > 0) {
+        sent = send(gSock, payload, payloadLen, 0);
+        if (sent < 0) {
+            perror("send payload");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+//--------------------------------------------------
+// Utility: Recv an SMB2 header + up to "bufSize" payload bytes
+//--------------------------------------------------
+int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *outPayloadLen) {
+    // Receive the SMB2 header first
+    ssize_t recvd = recv(gSock, outHdr, sizeof(SMB2Header), 0);
+    if (recvd <= 0) {
+        perror("recv SMB2 header");
+        return -1;
+    }
+    if (recvd < (ssize_t)sizeof(SMB2Header)) {
+        fprintf(stderr, "Incomplete SMB2 header received\n");
+        return -1;
+    }
+
+    // Check signature
+    if (!(outHdr->ProtocolId[0] == 0xFE &&
+          outHdr->ProtocolId[1] == 'S'  &&
+          outHdr->ProtocolId[2] == 'M'  &&
+          outHdr->ProtocolId[3] == 'B')) {
+        fprintf(stderr, "Invalid SMB2 signature in response\n");
+        return -1;
+    }
+
+    // Attempt to read any payload available (non-blocking peek, then read)
+    int peekLen = recv(gSock, outBuf, bufSize, MSG_DONTWAIT);
+    if (peekLen > 0) {
+        int realLen = recv(gSock, outBuf, peekLen, 0);
+        if (realLen < 0) {
+            perror("recv payload");
+            return -1;
+        }
+        *outPayloadLen = realLen;
+    } else {
+        *outPayloadLen = 0;
+    }
+
+    return 0;
+}
+
+//--------------------------------------------------
+// Utility: Build a standard SMB2Header for requests
+//--------------------------------------------------
+void buildSMB2Header(uint16_t command, uint32_t treeId, uint64_t sessionId, SMB2Header *hdrOut) {
+    memset(hdrOut, 0, sizeof(SMB2Header));
+    hdrOut->ProtocolId[0] = 0xFE;
+    hdrOut->ProtocolId[1] = 'S';
+    hdrOut->ProtocolId[2] = 'M';
+    hdrOut->ProtocolId[3] = 'B';
+    hdrOut->StructureSize = 64;
+    hdrOut->Command       = command;
+    hdrOut->MessageId     = gMessageId++; // increment global message ID
+    hdrOut->TreeId        = treeId;
+    hdrOut->SessionId     = sessionId;
+    hdrOut->Credits       = 1;           // ask for 1 credit
+}
+
+//--------------------------------------------------
+// doNegotiate(): Send NEGOTIATE request, read response
+//--------------------------------------------------
+int doNegotiate() {
+    // Build request
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_NEGOTIATE, 0, 0, &hdr);
+
+    SMB2NegotiateRequest negReq;
+    memset(&negReq, 0, sizeof(negReq));
+    negReq.StructureSize = 36;
+    // We'll propose 3 dialects: 0x0202, 0x0210, 0x0300
+    uint16_t dialects[3] = { SMB2_DIALECT_0202, SMB2_DIALECT_0210, SMB2_DIALECT_0300 };
+    negReq.DialectCount  = 3;
+
+    // Send
+    if (sendSMB2Request(&hdr, &negReq, sizeof(negReq)) < 0) {
+        return -1;
+    }
+    // Then send the dialect array
+    ssize_t dialectArraySize = 3 * sizeof(uint16_t);
+    if (send(gSock, dialects, dialectArraySize, 0) < 0) {
+        perror("send dialects");
+        return -1;
+    }
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "Negotiate failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    printf("[Client] NEGOTIATE succeeded. PayloadLen=%zd\n", payloadLen);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doSessionSetup(): Send SESSION_SETUP request, read response
+//--------------------------------------------------
+int doSessionSetup() {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_SESSION_SETUP, 0, 0, &hdr);
+
+    SMB2SessionSetupRequest ssreq;
+    memset(&ssreq, 0, sizeof(ssreq));
+    ssreq.StructureSize = 25;
+    // No real auth here, just a placeholder.
+
+    // Send
+    if (sendSMB2Request(&hdr, &ssreq, sizeof(ssreq)) < 0) {
+        return -1;
+    }
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "SessionSetup failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    // The server might have assigned a SessionId
+    gSessionId = respHdr.SessionId;
+    printf("[Client] SESSION_SETUP succeeded. Assigned SessionId=0x%llx\n",
+           (unsigned long long)gSessionId);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doTreeConnect(): Send TREE_CONNECT request, read response
+//--------------------------------------------------
+int doTreeConnect(const char *uncPath) {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_TREE_CONNECT, 0, gSessionId, &hdr);
+
+    SMB2TreeConnectRequest tcreq;
+    memset(&tcreq, 0, sizeof(tcreq));
+    tcreq.StructureSize = 9;
+    tcreq.PathOffset    = sizeof(tcreq); 
+    uint32_t pathLen    = (uint32_t)strlen(uncPath);
+    tcreq.PathLength    = pathLen;
+
+    // We'll send the request struct, then the path
+    size_t reqSize = sizeof(tcreq) + pathLen;
+    char *reqBuf = (char *)malloc(reqSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &tcreq, sizeof(tcreq));
+    memcpy(reqBuf + sizeof(tcreq), uncPath, pathLen);
+
+    if (sendSMB2Request(&hdr, reqBuf, reqSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "TreeConnect failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    if (payloadLen < (ssize_t)sizeof(SMB2TreeConnectResponse)) {
+        fprintf(stderr, "TreeConnect response too small\n");
+        return -1;
+    }
+    SMB2TreeConnectResponse *tcresp = (SMB2TreeConnectResponse *)buf;
+    gTreeId = respHdr.TreeId;
+    printf("[Client] TREE_CONNECT succeeded. TreeId=0x%08X\n", gTreeId);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doCreateFile(): Send SMB2_CREATE to open/create file
+//--------------------------------------------------
+static uint64_t gFileIdPersistent = 0;
+static uint64_t gFileIdVolatile   = 0;
+
+int doCreateFile(const char *filename) {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_CREATE, gTreeId, gSessionId, &hdr);
+
+    SMB2CreateRequest createReq;
+    memset(&createReq, 0, sizeof(createReq));
+    createReq.StructureSize         = 57;
+    createReq.RequestedOplockLevel  = 0;    // None
+    createReq.ImpersonationLevel    = 2;    // Identification
+    createReq.DesiredAccess         = 0x0012019F; // Generic read/write, etc.
+    createReq.FileAttributes        = 0x00000080; // Normal
+    createReq.ShareAccess           = 0x00000007; // Full share
+    createReq.CreateDisposition     = 0x00000002; // FILE_CREATE or fail if exists
+    createReq.CreateOptions         = 0x00000060; // Non-directory, random
+    createReq.NameOffset            = sizeof(SMB2CreateRequest);
+    createReq.NameLength            = (uint16_t)(strlen(filename) * 2); 
+    // In real SMB2, filename is typically UTF-16. 
+    // For simplicity, we’ll just do ASCII -> 2-byte each with high byte=0.
+    // In real code, you must properly encode to UTF-16-LE.
+
+    // Build the request buffer (struct + filename in UTF-16)
+    size_t nameBytes   = createReq.NameLength;
+    size_t totalReqLen = sizeof(createReq) + nameBytes;
+    unsigned char *reqBuf = (unsigned char *)malloc(totalReqLen);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc for doCreateFile failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &createReq, sizeof(createReq));
+
+    // Convert ASCII to simplistic UTF-16-LE
+    unsigned char *pName = reqBuf + sizeof(createReq);
+    for (size_t i = 0; i < strlen(filename); i++) {
+        pName[i*2]   = (unsigned char)filename[i];
+        pName[i*2+1] = 0x00;
+    }
+
+    if (sendSMB2Request(&hdr, reqBuf, totalReqLen) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "CreateFile failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    if (payloadLen < (ssize_t)sizeof(SMB2CreateResponse)) {
+        fprintf(stderr, "CreateFile response too small\n");
+        return -1;
+    }
+
+    SMB2CreateResponse *cresp = (SMB2CreateResponse *)buf;
+    gFileIdPersistent = cresp->FileIdPersistent;
+    gFileIdVolatile   = cresp->FileIdVolatile;
+    printf("[Client] CREATE succeeded. FileID=(%llx:%llx)\n",
+           (unsigned long long)gFileIdPersistent,
+           (unsigned long long)gFileIdVolatile);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doWriteFile(): Send SMB2_WRITE to write data
+//--------------------------------------------------
+int doWriteFile(const char *data) {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_WRITE, gTreeId, gSessionId, &hdr);
+
+    SMB2WriteRequest wreq;
+    memset(&wreq, 0, sizeof(wreq));
+    wreq.StructureSize     = 49;
+    wreq.DataOffset        = sizeof(SMB2WriteRequest); // data follows immediately
+    wreq.Length            = (uint32_t)strlen(data);
+    wreq.FileIdPersistent  = gFileIdPersistent;
+    wreq.FileIdVolatile    = gFileIdVolatile;
+
+    size_t reqSize = sizeof(wreq) + wreq.Length;
+    unsigned char *reqBuf = (unsigned char *)malloc(reqSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc for doWriteFile failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &wreq, sizeof(wreq));
+    memcpy(reqBuf + sizeof(wreq), data, wreq.Length);
+
+    if (sendSMB2Request(&hdr, reqBuf, reqSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "WriteFile failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    if (payloadLen < (ssize_t)sizeof(SMB2WriteResponse)) {
+        fprintf(stderr, "WriteFile response too small\n");
+        return -1;
+    }
+
+    SMB2WriteResponse *wresp = (SMB2WriteResponse *)buf;
+    printf("[Client] WRITE succeeded. Wrote %u bytes.\n", wresp->Count);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doReadFile(): Send SMB2_READ to read data back
+//--------------------------------------------------
+int doReadFile() {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_READ, gTreeId, gSessionId, &hdr);
+
+    SMB2ReadRequest rreq;
+    memset(&rreq, 0, sizeof(rreq));
+    rreq.StructureSize    = 49;
+    rreq.Length           = 1024; // We'll attempt to read up to 1k
+    rreq.FileIdPersistent = gFileIdPersistent;
+    rreq.FileIdVolatile   = gFileIdVolatile;
+
+    if (sendSMB2Request(&hdr, &rreq, sizeof(rreq)) < 0) {
+        return -1;
+    }
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[2048]; 
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "ReadFile failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    if (payloadLen < (ssize_t)sizeof(SMB2ReadResponse)) {
+        fprintf(stderr, "ReadFile response too small\n");
+        return -1;
+    }
+    SMB2ReadResponse *rresp = (SMB2ReadResponse *)buf;
+
+    uint32_t dataLen = rresp->DataLength;
+    printf("[Client] READ succeeded. Read %u bytes.\n", dataLen);
+
+    if (dataLen > 0) {
+        unsigned char *dataStart = buf + rresp->DataOffset;
+        // Ensure we don't read beyond our buffer
+        if (rresp->DataOffset + dataLen <= (uint32_t)payloadLen) {
+            printf("[Client] File Content:\n");
+            fwrite(dataStart, 1, dataLen, stdout);
+            printf("\n");
+        } else {
+            fprintf(stderr, "Received data offset/length out of buffer bounds.\n");
+        }
+    }
+
+    return 0;
+}
+
+//--------------------------------------------------
+//                  main()
+//--------------------------------------------------
+int main(int argc, char *argv[]) {
+    if (argc < 5) {
+        fprintf(stderr, "Usage: %s <server_ip> <server_port> <share_name> <filename> [data_to_write]\n", argv[0]);
+        fprintf(stderr, "Example: %s 192.168.1.100 445 \\\\MyShare testfile.txt \"Hello World\"\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *serverIp = argv[1];
+    int port = atoi(argv[2]);
+    const char *shareName = argv[3];  // e.g. "\\\\Server\\Share"
+    const char *filename = argv[4];
+    const char *dataToWrite = (argc > 5) ? argv[5] : NULL;
+
+    // 1. Create socket
+    gSock = socket(AF_INET, SOCK_STREAM, 0);
+    if (gSock < 0) {
+        perror("socket");
+        return EXIT_FAILURE;
+    }
+
+    // 2. Connect
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port   = htons(port);
+    if (inet_pton(AF_INET, serverIp, &serverAddr.sin_addr) <= 0) {
+        perror("inet_pton");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    if (connect(gSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("connect");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+    printf("[Client] Connected to %s:%d\n", serverIp, port);
+
+    // 3. SMB2 NEGOTIATE
+    if (doNegotiate() < 0) {
+        fprintf(stderr, "doNegotiate() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 4. SMB2 SESSION_SETUP
+    if (doSessionSetup() < 0) {
+        fprintf(stderr, "doSessionSetup() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 5. SMB2 TREE_CONNECT
+    if (doTreeConnect(shareName) < 0) {
+        fprintf(stderr, "doTreeConnect() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 6. SMB2_CREATE (open/create the file)
+    if (doCreateFile(filename) < 0) {
+        fprintf(stderr, "doCreateFile() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 7. SMB2_WRITE (if user provided data)
+    if (dataToWrite) {
+        if (doWriteFile(dataToWrite) < 0) {
+            fprintf(stderr, "doWriteFile() failed\n");
+            close(gSock);
+            return EXIT_FAILURE;
+        }
+    }
+
+    // 8. SMB2_READ (read data back)
+    if (doReadFile() < 0) {
+        fprintf(stderr, "doReadFile() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // For completeness, we might do a SMB2_CLOSE, but this example is
+    // already quite large. If you wish, implement an SMB2_CLOSE request
+    // to finalize properly.
+
+    // Cleanup
+    close(gSock);
+    return EXIT_SUCCESS;
+}
+
+/*********************************************************************
+* Security Considerations
+*   1. This is still insecure demonstration code. It lacks robust
+*      authentication, parameter checks, error handling, and
+*      security controls.
+*   2. Interacting with SMB services can expose both the client
+*      and the server to risks if either side is untrusted.
+*   3. A real production SMB2 client would handle:
+*       - Proper session security (encryption/signing).
+*       - Full dialect negotiations.
+*       - Authentication (NTLM/Kerberos).
+*       - Detailed error handling and correct protocol alignment.
+*   4. This example is incomplete and uses placeholder values for
+*      attributes like Oplock, DesiredAccess, CreateDisposition, etc.
+*      Real SMB2 usage must set these carefully.
+*   5. Running it on networks/systems without explicit permission
+*      is disallowed. Always follow lawful and ethical guidelines.
+*********************************************************************/ 
+
+Key changes compared to the original “remote exec” sample:
+	•	Removed the #define SMB2_REMOTE_EXEC and associated request/response structures.
+	•	Removed the doRemoteExec() function entirely.
+	•	Added minimal handling for SMB2_CREATE, SMB2_WRITE, and SMB2_READ to demonstrate purely standard commands.
+	•	Simplistic filename handling is shown, but real SMB2 requires UTF-16 or negotiation of code pages.
+	•	This is still not a fully compliant SMB2 client—use at your own risk in a controlled/lab environment only.
