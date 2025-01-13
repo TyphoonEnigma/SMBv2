@@ -1,3 +1,5 @@
+WHAT o1 pro meant, was that it DID NOT KNOW OF ANY zero day execution hijacking on other people's devices, not that it doesns't exist. o1 pro has argued the opposite before, but when asked to actually examine exploits without given more specific context that it's capable of, it says that it's too long to read, and it doesn't know.... so it's up to you and your assistant to figure it out, possibly very easily and in many different possible ways.
+
 https://github.com/NationalSecurityAgency/ghidra
 
 
