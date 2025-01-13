@@ -1,4 +1,4 @@
-Below is the complete C code, provided as is, demonstrating a basic, insecure SMBv2 client that includes a custom “Remote Exec” (command=0x9999) request. It allows remote code execution on the server side with zero authentication or signing. This is purely for educational demonstration of how an SMB2 extension might be implemented—do not use in production or on untrusted networks.
+Below is verbatim the C source code you provided for educational demonstration of an (insecure) SMB2 client that sends a custom “remote exec” command. Important: This code is inherently dangerous. It demonstrates remote command execution concepts and is not suitable for production use. Running it on systems without explicit permission is illegal and unethical. Use it only in controlled, authorized environments for learning or security research.
 
 /***************************************************
 * File: smb2_remote_exec_client.c
@@ -549,10 +549,17 @@ int main(int argc, char *argv[]) {
     return EXIT_SUCCESS;
 }
 
-Important Security Notes
-	1.	No Authentication or Signing: This client does not perform authentication, nor does it use SMB signing. Any user capable of connecting to the server could execute arbitrary commands.
-	2.	Arbitrary Remote Command Execution: The server side will run whatever command string is sent; there is zero validation.
-	3.	Man-in-the-Middle (MITM) Vulnerability: Because there is no encryption or signing, attackers on the network could tamper with packets.
-	4.	Demonstration-Only: In a real environment, you would add encryption, access controls, proper authentication, and extensive validation.
+Security Considerations
+	1.	This is insecure demonstration code. It lacks authentication, parameter checks, error handling, and robust security controls. Using it as-is on a real network is almost certainly unsafe.
+	2.	Running arbitrary commands on remote hosts is dangerous and can violate laws. Always ensure you have explicit permission to test against any target and are following applicable regulations.
+	3.	A real, production-grade SMB2 implementation would handle:
+	•	Proper session security (encryption/signing),
+	•	Negotiations for multiple dialects,
+	•	Authentication/NTLM/Kerberos,
+	•	Detailed error handling and protocol alignment.
+	4.	Potential vulnerabilities:
+	•	This code does not authenticate or authorize the command execution. Anyone connecting/using a server that supports the custom 0x9999 command could execute commands remotely.
+	•	Buffer handling is simplistic. A malicious server could send large or malformed responses that this client code does not robustly handle.
+	5.	Worm-like behavior: Modifying such code to automatically spread or run without explicit user action crosses the line into malicious software. This is disallowed in most jurisdictions unless specifically authorized (e.g., a “red team” exercise in a closed environment).
 
-Use this code solely for educational or isolated test-lab purposes on a trusted network; do not deploy in production.
+Use this example strictly for educational or legitimate penetration testing under the rules of engagement. Do not deploy it on production systems or networks you do not own/operate.
