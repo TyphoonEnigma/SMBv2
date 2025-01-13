@@ -1,20 +1,3 @@
-Below is an educational example of how one might attempt “remote command execution” over SMB2 without using a custom (non-standard) command code. Instead, this example relies on standard SMB2 operations (CREATE, READ, WRITE, etc.) to open a named pipe—for instance, the Service Control Manager pipe (\\PIPE\\svcctl)—and then send/receive RPC messages inside that pipe.
-
-	Important Caveat
-SMB2 itself does not provide a built-in “remote exec” command—this does not exist in the official SMB2 spec. Instead, any real-world remote execution is typically accomplished by:
-		1.	Opening a named pipe (via SMB2_CREATE on \\server\IPC$ with path \\PIPE\\something).
-	2.	Speaking RPC (DCERPC) over that pipe to a Windows service (e.g. Service Control Manager, Task Scheduler, etc.).
-	3.	Issuing a command (e.g. create/start a service that runs your chosen executable or command).
-
-	This is far more complex in reality because you must:
-		•	Perform RPC-level marshalling/unmarshalling of structures.
-	•	Properly authenticate with the remote service manager.
-	•	Have privileges to create or start services remotely.
-
-	The code below only illustrates the SMB2 part—opening a named pipe and sending/receiving raw bytes. It does not implement the full DCERPC logic for service creation or command execution. In a real scenario, you’d have to craft the correct MS-RPC packets.
-
-smb2_pipe_exec_client.c
-
 /***************************************************
 * File: smb2_pipe_exec_client.c
 *
@@ -728,30 +711,3 @@ int main(int argc, char *argv[]) {
     printf("[Client] Done.\n");
     return EXIT_SUCCESS;
 }
-
-How This Could Enable “Remote Exec”
-	1.	Connect to the SCM (Service Control Manager) Pipe
-Using \\PIPE\\svcctl is a common approach. Another example might be \\PIPE\\atsvc (Task Scheduler).
-	2.	Perform RPC Calls
-Over that named pipe, you speak the MSRPC/DCERPC protocol. Examples:
-	•	OpenSCManagerW
-	•	CreateServiceW (pointing to cmd.exe /c "<your command>")
-	•	StartServiceW
-	3.	The Service Runs Remotely
-If successful, the remote system starts the service you created, effectively running your chosen command.
-	4.	Teardown
-Typically, you’d delete the service when done.
-
-Why It’s Non-Trivial
-	•	You must properly marshal and unmarshal MSRPC calls. This involves IDL definitions (e.g., from Microsoft’s IDL files for SVCCTL).
-	•	You must have sufficient privileges on the target system to create or start services.
-	•	Real Windows systems require authentication (e.g., NTLM or Kerberos) to connect to the Service Control Manager pipe.
-	•	The SMB2 portion is only the “transport.” The actual “exec” logic is an RPC layer on top of SMB2.
-
-Security and Ethical Considerations
-	1.	SMB2 + Named Pipes is a powerful combination. Gaining remote code execution by creating services is a well-known technique used by tools like psexec.
-	2.	Authentication is critical. Real servers will reject such calls unless you provide valid credentials and have the right permissions.
-	3.	Buffer/packet parsing must be done carefully. A malicious or hardened server could send unexpected data, leading to potential vulnerabilities in your client.
-	4.	Legal/Ethical usage. Running remote code or creating services on machines you do not own or have permission to test is likely illegal. Always ensure you have explicit authorization (e.g., penetration tests under a contract).
-
-This example is for demonstration and educational purposes only, showing that you can use standard SMB2 commands (CREATE, READ, WRITE on a named pipe) plus RPC to accomplish remote actions. However, implementing the full RPC logic is beyond the scope here and can be quite complex in practice. Use it only in controlled environments with proper authorization.

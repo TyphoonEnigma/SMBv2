@@ -1,0 +1,18 @@
+Evaluating remote execution via SMB2
+I’m thinking about remote execution using standard SMB2 commands. Since SMB2 lacks built-in remote execution commands, I consider uploading a script or executable, then leveraging SMB2 to schedule or run it, such as setting up a scheduled job.
+Considering file manipulation
+I’m meeting the challenge of using standard SMB2 commands for remote execution. Instead of RPC or Service Control Manager, I thought of creating a file on an administrative share and scheduling it.
+Tackling SMB2 commands
+I’m digging into standard SMB2 commands. SMB2_CREATE connects to IPC$, SMB2_WRITE uploads a file, and SMB2_IOCTL or SMB2_FSCTL invokes functions, but SMB2_CREATE named pipe to \PIPE\svcctl is intriguing.
+Crafting unique SMB2 solutions
+I’m considering a custom approach for remote execution, utilizing SMB2_CREATE on \PIPE\svcctl with specialized trans calls, but tending to rely on SMB1 tactics.
+Clarifying SMB2’s limits
+OK, let me see. SMB2 lacks built-in remote execution commands, so the user needs a custom solution combining SMB2 commands, potentially including “IPC$” and “named pipe,” which isn’t standard SMB2.
+Weighing options
+I’m debating between uploading a script or EXE to an administrative share and scheduling it, or advising a disclaimer on the absence of a standard SMB2 method for remote execution. Progress is being made.
+Navigating complex options
+I’m mapping out connecting to “IPC$”, setting up a named pipe, and sending specialized requests, though this step requires acknowledging its deviation from standard SMB2 commands.
+Giving examples
+We’re opting to illustrate remote execution with a more feasible example: connecting via SMB2, uploading a file, and using a startup script, despite SMB2’s typical limitations.
+Piecing together the code
+I’m crafting a simplified code snippet to illustrate remote execution through SMB2: connecting to an SMB2 share, uploading a file, and using a startup script to execute the file.
