@@ -1,293 +1,867 @@
-Currently there's a gigantic joke, but still somewhat educational, in ummmm... anyways o1 pro seems to have near-zero(approx for advanced users) actual safety but is incapable of figuring stuff out, so we ensure that we feed in context that it could figure out well only... 
+Below is a substantially expanded and rewritten README to reflect the specifics of smb2_pipe_exec_client.c—while still covering the broader context of SMBv2/SMB3 capabilities, real-world exploit development, and important security considerations.
 
-# README: Exploring SMBv2/SMB3 and Real-World Exploit Development Lessons
+README: SMBv2 Named Pipe Client & Lessons in Protocol-Level Development
 
-Welcome to this comprehensive guide on **SMBv2/SMB3** capabilities and how they relate to real-world exploit development—using Samba as an open-source reference implementation. This document merges insights from past exploits (like EternalBlue), clarifications about zero-day vulnerabilities, and a practical roadmap for building, analyzing, and modifying an actual SMBv2/3 server (Samba). Along the way, we’ll offer encouragement to deepen your understanding, expand your capabilities in protocol-level study, and refine your security research or development skills.
+Welcome! This repository contains a demonstration client (smb2_pipe_exec_client.c) that showcases how one might connect to an SMBv2/SMB3 server (over TCP 445), perform essential SMB2 handshake steps (negotiate, session setup, tree connect), and then open a named pipe (e.g., \\PIPE\\svcctl). Although it includes code for sending and receiving data through the pipe, it does not fully implement real DCERPC-based remote service creation or management. This is strictly incomplete educational code, intended to illustrate the concepts behind SMB named-pipe communication.
 
----
+Disclaimer: This repository is not a complete exploit development kit. It is not a production-ready tool. It does not parse or marshal real DCERPC data. If you are exploring how advanced Windows or Samba-based RCE might be achieved, consider this project a starting point for learning the wire protocol—not a final or polished solution.
 
-## Table of Contents
-1. [Context: Zero-Day Exploits and “o1 pro”](#context-zero-day-exploits-and-o1-pro)
-2. [Lessons Learned: EternalBlue vs. Toy Backdoors](#lessons-learned-eternalblue-vs-toy-backdoors)
-3. [Comprehensive Guide to Samba (Real SMBv2)](#comprehensive-guide-to-samba-real-smbv2)
-   1. [Obtaining and Building Samba](#311-obtaining-and-building-the-latest-samba-real-smbv2)
-   2. [Locating the Core SMBv2 Server Logic](#32-locating-the-core-smbv2-server-logic-in-samba)
-   3. [Running the Real Samba SMBv2 Server](#33-running-the-real-samba-smbv2-server)
-   4. [Analyzing Samba with Ghidra](#34-analyzing-samba-with-ghidra-or-other-tools)
-   5. [Why Real Samba Doesn’t Have the Toy “Backdoor”](#35-why-real-samba-doesnt-have-the-toy-backdoor)
-   6. [Summary and Final Warnings](#36-summary-and-final-warnings)
-   7. [If You Still Want a “Backdoor” in Samba…](#37-if-you-still-want-a-backdoor-in-samba)
-   8. [Complete Takeaways](#38-complete-takeaways)
-4. [“Real EternalBlue” Development Lessons](#4-tying-it-all-together-real-eternalblue-development-lessons)
-5. [Overview of SMBv2/3 Capabilities](#below-is-a-more-detailed-overview-of-smbv2-including-smb-2x-and-3x-capabilities)
-   1. [Core Improvements](#1-core-improvements-from-smbv1-to-smbv2)
-   2. [Evolution into SMB 2.1, 3.0, and Beyond](#2-evolution-into-smb-21-smb-30-and-beyond)
-   3. [Capabilities in a Modern SMBv2/3 Server (Like Samba)](#3-capabilities-in-a-modern-smbv23-server-like-samba)
-   4. [Encouragement for Learning and Exploration](#4-encouragement-for-learning-and-exploration)
-6. [Conclusion](#5-conclusion)
+Table of Contents
+	1.	Purpose & Context
+	2.	Big Picture: SMBv2/3 and Real-World Exploits
+	3.	About smb2_pipe_exec_client.c
+	1.	Workflow Overview
+	2.	Capabilities & Limitations
+	3.	Security Warnings
+	4.	Building & Running the Client
+	5.	Exploring Further: Samba and Named Pipes
+	6.	Real Exploit Development Lessons
+	7.	Overview of SMBv2/3 Capabilities
+	8.	Full Source Code
+	9.	Conclusion & Ethical Reminder
 
----
+1. Purpose & Context
 
-## 1. Context: Zero-Day Exploits and “o1 pro”
-**Zero-day exploits** are software vulnerabilities that are unknown to the vendor or public. “o1 pro” clarified that they do not have immediate knowledge of an active zero-day exploit, **not** that it’s impossible one exists. Tools like EternalBlue show these exploits do occur, requiring sophisticated analysis. Just because no one has publicly provided a multi-thousand-line exploit chain doesn’t mean it cannot be done.
+Why this code?
+This example demonstrates how to initiate and maintain a client-side SMB2 session with a server (Windows or Samba) and how to open a named pipe (like the Windows Service Control Manager pipe \\PIPE\\svcctl). In more practical/advanced usage, sending specially crafted DCERPC packets to the Service Control Manager can lead to remote service creation and execution. However, the code here does not implement the complex DCERPC logic needed—this is left as an exercise or a research extension for those serious about protocol-level development.
 
-> **Key takeaway**: Zero-days often hinge on obscure bugs in large codebases. Researchers must gather code, logs, and thorough information to assess whether a bug can be turned into a stable remote code execution (RCE) exploit.
+Who should read this?
+	•	Security researchers exploring how SMBv2/SMB3 works at the packet level.
+	•	Developers learning the fundamentals of Windows networking and pipe-based RPC.
+	•	Anyone curious about how real exploits (like EternalBlue) might build upon low-level SMB communication.
 
----
+Note that no zero-day is presented here. This is purely educational.
 
-## 2. Lessons Learned: EternalBlue vs. Toy Backdoors
-1. **EternalBlue**: Exploited subtle memory-corruption flaws in Microsoft’s SMBv1 stack. It was far from obvious, requiring deep protocol understanding and specialized knowledge.
-2. **Toy Backdoor**: An educational “SMBv2-like” example with a magic command (0xFFFF) that overwrote a function pointer. This was intentionally blatant and unrealistic compared to real-world exploit complexity.
-3. **Real Samba**: Has no trivial “magic command” or hidden backdoor. Potential vulnerabilities typically involve nuanced logic, boundary checks, or memory management errors that require extensive analysis to exploit.
+2. Big Picture: SMBv2/3 and Real-World Exploits
+	•	SMBv2/3 drastically improved performance and security over the older SMBv1 protocol. It supports authentication mechanisms, message signing, encryption, and more robust flow control.
+	•	Named Pipes over SMB are used for inter-process communication—Microsoft RPC calls frequently flow through these pipes to implement administrative tasks (e.g., managing services, registry, etc.).
+	•	Exploit Development in a real environment can target memory corruption, logic flaws, or misconfigurations in these protocols. Tools like EternalBlue exploited specific SMBv1 vulnerabilities. Modern SMB stacks (including Samba’s SMBv2/3) tend to be more hardened.
 
-> **Bottom line**: Real RCE exploits like EternalBlue are usually subtle and complex. A toy example demonstrates principles quickly but doesn’t mirror the real level of sophistication or code auditing required in production-grade software.
+3. About smb2_pipe_exec_client.c
 
----
+This file demonstrates:
+	1.	SMB2 Negotiate: Chooses a dialect (e.g., 0x0202 or 0x0300).
+	2.	SMB2 Session Setup: Establishes an authenticated session (though our example is heavily simplified).
+	3.	SMB2 Tree Connect: Connects to a share (in this case, IPC$) on the remote server.
+	4.	SMB2 Create: Opens a named pipe—here, \\PIPE\\svcctl.
+	5.	SMB2 Write/Read: Sends and receives data via the pipe.
 
-## 3. Comprehensive Guide to Samba (Real SMBv2)
+3.1. Workflow Overview
+	1.	Socket Connection to server on TCP port 445.
+	2.	Negotiate Protocol: Exchange dialect info.
+	3.	Session Setup: Minimal handshake in this example. Real networks use NTLM/Kerberos.
+	4.	Tree Connect to \\<server>\IPC$.
+	5.	Create the named pipe—obtaining a file ID for subsequent read/write requests.
+	6.	Send Mock RPC Data into the pipe.
+	7.	Receive whatever the server responds with (if anything).
 
-Samba is an open-source implementation of SMB. It supports **SMBv2** and **SMBv3**, is licensed under GPLv3, and is widely used in production. Below is an **unaltered roadmap** for obtaining, building, and analyzing Samba—highlighting how a true SMBv2/3 server works and why a hidden backdoor is unlikely in well-maintained code.
+3.2. Capabilities & Limitations
+	•	Capability: Demonstrates correct usage of SMB2 headers and minimal substructures to do basic open/read/write operations on a named pipe.
+	•	Limitation: Lacks real authentication negotiation, DCERPC marshalling, or error handling for complex scenarios. The code is not robustly tested across all server versions.
 
-### 3.1. Obtaining and Building the Latest Samba (Real SMBv2)
+3.3. Security Warnings
+	•	Incomplete Auth: For demonstration only—no real credential exchange is happening.
+	•	RPC Stubs: The DCERPC data is just a placeholder (0x05 0x00 ...). Writing real SVCCTL or other RPC calls requires a precise marshalling structure.
+	•	Ethical Use: If you attempt to adapt or extend this client to create remote Windows services, ensure you have explicit authorization in a lab or test environment.
 
-#### 3.1.1. Download the Samba Source Code
-```bash
-# Make sure you have git installed
+4. Building & Running the Client
+
+Below are general steps for Linux-based systems:
+	1.	Install Dependencies: A typical Linux environment with gcc, networking headers, etc.
+
 sudo apt-get update
-sudo apt-get install -y git
+sudo apt-get install -y build-essential
 
-# Clone the Samba repository (master branch)
-git clone https://gitlab.com/samba-team/samba.git samba-latest
-cd samba-latest
 
-# (If you’re actually in the year 2025, you might want to check out
-#  the latest stable tag or release branch that Samba provides, e.g., v4.xx.x)
+	2.	Compile:
 
-3.1.2. Install Build Dependencies
+gcc -o smb2_pipe_exec_client smb2_pipe_exec_client.c
 
-sudo apt-get install -y build-essential python3 python3-dev python3-pip \
-    libacl1-dev libattr1-dev libblkid-dev libldap2-dev libldb-dev \
-    libreadline-dev perl gdb pkg-config
 
-(Additional packages may be required for advanced features like Active Directory.)
+	3.	Run:
 
-3.1.3. Configure and Compile Samba
+./smb2_pipe_exec_client <server_ip> <server_port>
 
-# 1) Bootstrap (if needed)
-./buildtools/bin/waf configure --disable-python
+	•	Example:
 
-# 2) Configure the build with typical defaults
+./smb2_pipe_exec_client 192.168.1.10 445
+
+
+	•	This attempts a minimal negotiation and tries to open \\PIPE\\svcctl on the remote system.
+
+5. Exploring Further: Samba and Named Pipes
+
+If you want to see how open-source SMBv2/3 is handled in production, take a look at the Samba project:
+	1.	Obtain & Build Samba:
+
+git clone https://gitlab.com/samba-team/samba.git
+cd samba
 ./configure --enable-debug
-
-# 3) Compile
 make -j$(nproc)
 
-# 4) (Optional) Install to /usr/local/samba or another prefix
-sudo make install
 
-When complete, you’ll have a production-grade SMB server (smbd) and related binaries.
+	2.	Launch the Samba smbd server, disabling SMBv1 and focusing on SMBv2/3:
 
-3.2. Locating the Core SMBv2 Server Logic in Samba
-	•	source3/ holds most of the classic file server (smbd).
-	•	source4/ holds AD domain controller functionality.
-
-For SMB2/3, examine:
-	•	source3/smbd/smb2_server.c (main dispatch logic)
-	•	source3/smbd/smb2_read.c
-	•	source3/smbd/smb2_write.c
-	•	source3/smbd/smb2_ioctl.c, etc.
-
-Below is a partial snippet from smb2_server.c (unmodified) to illustrate how Samba routes SMB2 commands:
-
-/* 
-   Copyright (C) Andrew Tridgell 1992-1998
-   Copyright (C) Jeremy Allison 1995-2025
-   ...
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 3 of the License, or
-   (at your option) any later version.
-*/
-
-#include "includes.h"
-#include "smbd/smbd.h"
-#include "smbd/smb2_server.h"
-
-/* 
-   This is a partial snippet to illustrate how Samba dispatches SMB2 commands.
-   Actual code is large and more complex.
-*/
-
-NTSTATUS smbd_smb2_request_dispatch(struct smbd_smb2_request *req)
-{
-    NTSTATUS status = NT_STATUS_OK;
-    switch (req->hdr.AsyncId.Command) {
-    case SMB2_NEGOTIATE:
-        status = smbd_smb2_negotiate(req);
-        break;
-    case SMB2_SESSION_SETUP:
-        status = smbd_smb2_session_setup(req);
-        break;
-    case SMB2_TREE_CONNECT:
-        status = smbd_smb2_tree_connect(req);
-        break;
-    case SMB2_LOGOFF:
-        status = smbd_smb2_logoff(req);
-        break;
-    case SMB2_CREATE:
-        status = smbd_smb2_create(req);
-        break;
-    case SMB2_CLOSE:
-        status = smbd_smb2_close(req);
-        break;
-    case SMB2_FLUSH:
-        status = smbd_smb2_flush(req);
-        break;
-    case SMB2_READ:
-        status = smbd_smb2_read(req);
-        break;
-    case SMB2_WRITE:
-        status = smbd_smb2_write(req);
-        break;
-    case SMB2_IOCTL:
-        status = smbd_smb2_ioctl(req);
-        break;
-    // ... many more ...
-    default:
-        DEBUG(1,("Unknown SMB2 command 0x%x\n", req->hdr.AsyncId.Command));
-        status = NT_STATUS_NOT_IMPLEMENTED;
-        break;
-    }
-
-    return status;
-}
-
-	Note: Samba enforces field validation, handles authentication (NTLM, Kerberos), signing/encryption, and more. Unlike a toy example, there’s no hidden 0xFFFF or unbounded pointer overwrites.
-
-3.3. Running the Real Samba SMBv2 Server
-	1.	Create a Samba configuration (e.g., /usr/local/samba/etc/smb.conf):
-
+# /usr/local/samba/etc/smb.conf
 [global]
-    workgroup = WORKGROUP
-    server string = Samba Server
-    netbios name = MYSERVER
-    security = user
-    map to guest = Bad User
-    # Force use of SMB2 (disable SMB1)
     server min protocol = SMB2_02
     server max protocol = SMB3
-
-[public]
-    path = /srv/samba/public
-    public = yes
-    guest ok = yes
-    writable = yes
+    ...
 
 
-	2.	Start smbd (and nmbd if needed):
+	3.	Observe how Samba routes named pipe operations. You’ll find robust handling of authentication, encryption, and multiple dialects.
 
-sudo /usr/local/samba/sbin/smbd -D
-sudo /usr/local/samba/sbin/nmbd -D
+Comparing Samba’s source3/smbd/smb2_* files with the code in smb2_pipe_exec_client.c will highlight how much more sophisticated a production server’s logic can be.
 
-Or run in the foreground for debugging:
+6. Real Exploit Development Lessons
+	1.	Subtlety Over Simplicity: Real vulnerabilities often arise from intricate logic or boundary-check failures (e.g., EternalBlue). A simple “magic command” approach is rarely found in production.
+	2.	Named Pipe RCE: Achieving remote code execution via named pipes typically involves advanced DCERPC calls to the Service Control Manager, the Remote Registry interface, or other high-value endpoints.
+	3.	Open Source or Reverse-Engineering: Tools like Ghidra or IDA Pro allow researchers to dissect code—looking for memory corruption or misconfigurations.
+	4.	Authentication: Proper credential checks, session keys, and encryption reduce attack vectors.
 
-sudo /usr/local/samba/sbin/smbd -i -d3
+7. Overview of SMBv2/3 Capabilities
+
+Modern SMB stacks include:
+	•	Larger I/O operations for improved performance.
+	•	Credit-based flow control to avoid overload.
+	•	Pipelining/compounding multiple operations.
+	•	Stronger security with signing and optional encryption (SMB 3.x).
+	•	Dialects like SMB 3.1.1 feature pre-auth integrity checks, preventing tampering during handshake.
+
+A thorough understanding of these capabilities is essential for secure deployment and nuanced exploit research.
+
+8. Full Source Code
+
+Below is the complete smb2_pipe_exec_client.c source code. No portions are omitted or truncated.
+
+<details>
+<summary>Click to expand the entire code</summary>
 
 
-	3.	Connect from any SMB client (Windows or Linux). You’ll be communicating via real SMBv2/3, not a simplified demonstration.
+/***************************************************
+* File: smb2_pipe_exec_client.c
+*
+* Demonstrates:
+*   1. Connecting to an SMB2 server (TCP 445).
+*   2. Negotiate, Session Setup, Tree Connect to IPC$.
+*   3. Create/open the named pipe "\\PIPE\\svcctl".
+*   4. (Hypothetically) exchange RPC messages that could
+*      create/start a service, thus achieving remote exec.
+*
+* WARNING:
+*  - This is incomplete demonstration code. It does NOT
+*    properly marshal or parse RPC. It does NOT do real auth.
+*  - Real remote exec via SMB named pipes requires writing
+*    DCERPC packets for the Service Control Manager or other
+*    service endpoints. This is non-trivial and must be done
+*    carefully and ethically.
+*  - Use only in a controlled environment with permission!
+***************************************************/
 
-3.4. Analyzing Samba with Ghidra (or Other Tools)
-	1.	Keep Debug Symbols:
-	•	--enable-debug during build retains function names and variable info.
-	2.	Locate the smbd Binary:
-	•	Possibly in bin/default/source3/smbd/smbd.
-	•	Or /usr/local/samba/sbin/smbd after install.
-	3.	Import into Ghidra:
-	•	Create a new project, then import smbd.
-	•	Let Ghidra analyze.
-	4.	Search for SMBv2 Functions:
-	•	Look for smbd_smb2_request_dispatch(), smbd_smb2_read(), etc.
-	5.	Study Security Mechanisms:
-	•	Observe how Samba verifies parameters, enforces boundaries, signs/encrypts traffic, etc.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <stdint.h>
+#include <errno.h>
 
-3.5. Why Real Samba Doesn’t Have the Toy “Backdoor”
-	•	No hidden 0xFFFF command.
-	•	Structure sizes are validated and enforced.
-	•	Buffer boundaries are thoroughly checked.
-	•	Open-source nature: Many contributors review code, reducing the chance of secret debug paths.
+#pragma pack(push, 1)
 
-3.6. Summary and Final Warnings
-	1.	Real SMBv2/3: Samba implements robust, production-ready protocols.
-	2.	Huge Codebase: Focus on source3/smbd/ for SMB server internals.
-	3.	No Simple Backdoor: Samba doesn’t come with easy function-pointer overwrites.
-	4.	Reverse-Engineering: Tools like Ghidra offer transparency; use them ethically.
-	5.	GPLv3: Samba is licensed under GPLv3; modifications and distributions must follow the same license.
-	6.	Security Hardening: Always use best practices (firewalls, SELinux, etc.) when running network services.
+//--------------------------------------------------
+//                  SMB2 Header
+//--------------------------------------------------
+typedef struct _SMB2Header {
+    unsigned char  ProtocolId[4];  // 0xFE 'S' 'M' 'B'
+    uint16_t       StructureSize;  // Always 64 for SMB2
+    uint16_t       CreditCharge;   // Credits requested/charged
+    uint32_t       Status;         // For responses, server sets status
+    uint16_t       Command;        // SMB2 command code
+    uint16_t       Credits;        // Credits granted/requested
+    uint32_t       Flags;          // SMB2 header flags
+    uint32_t       NextCommand;    // Offset to next command in compound
+    uint64_t       MessageId;      // Unique message ID
+    uint32_t       Reserved;       // Usually 0
+    uint32_t       TreeId;         // Tree ID
+    uint64_t       SessionId;      // Session ID
+    unsigned char  Signature[16];  // For signing (unused here)
+} SMB2Header;
 
-3.7. If You Still Want a “Backdoor” in Samba…
+//--------------------------------------------------
+//             Standard SMB2 Commands
+//--------------------------------------------------
+#define SMB2_NEGOTIATE       0x0000
+#define SMB2_SESSION_SETUP   0x0001
+#define SMB2_TREE_CONNECT    0x0003
+#define SMB2_CREATE          0x0005
+#define SMB2_READ            0x0008
+#define SMB2_WRITE           0x0009
+#define SMB2_CLOSE           0x0006
 
-A custom 0xFFFF backdoor command (like in the toy example) would involve:
-	1.	Adding a new case in smbd_smb2_request_dispatch().
-	2.	Writing an insecure handler that copies unbounded data.
-	3.	Rebuilding Samba.
+//--------------------------------------------------
+//               Some SMB2 Status Codes
+//--------------------------------------------------
+#define STATUS_SUCCESS                0x00000000
+#define STATUS_INVALID_PARAMETER      0xC000000D
+#define STATUS_ACCESS_DENIED          0xC0000022
+#define STATUS_NOT_SUPPORTED          0xC00000BB
 
-	Warning: This is highly discouraged. A hidden debug path can become a catastrophic RCE vulnerability. Learning from examples is fine—but deploying such a backdoor is reckless and unethical.
+//--------------------------------------------------
+//                   SMB2 Dialects
+//--------------------------------------------------
+#define SMB2_DIALECT_0202    0x0202
+#define SMB2_DIALECT_0210    0x0210
+#define SMB2_DIALECT_0300    0x0300
 
-3.8. Complete Takeaways
-	•	You asked for a real SMBv2 server: Samba is the canonical open-source solution.
-	•	Full Code: Samba’s code is too large to paste entirely; clone the repo for everything.
-	•	Build & Reverse-Engineer: Compile it, run it, open it in Ghidra to see real-world SMB details.
-	•	No Hidden RCE: Samba doesn’t include a trivial function-pointer overwrite. If you introduce one, you create a security disaster.
+//--------------------------------------------------
+//     Minimal Structures for Basic SMB2 Ops
+//--------------------------------------------------
 
-4. Tying It All Together: “Real EternalBlue” Development Lessons
-	1.	Zero Days Aren’t Always Obvious: Lack of documented analysis doesn’t mean no exploit exists. EternalBlue blindsided many because the vulnerability was subtle.
-	2.	Subtle Memory Corruptions: Real RCE typically hinges on nuanced boundary checks or structure parsing issues—not an obvious hidden command.
-	3.	Reverse-Engineering: Tools like Ghidra let attackers and defenders sift through compiled code to find flaws.
-	4.	Large Codebase: Samba has hundreds of thousands of lines. Even if it’s “too long to read,” focusing on critical areas (file I/O, authentication) can yield vulnerabilities if they exist.
-	5.	Hidden vs. Accidental: A “toy backdoor” is deliberately inserted. Real zero-days are more often accidental—discovered via fuzzing, code review, or advanced research.
+/* SMB2 NEGOTIATE */
+typedef struct _SMB2NegotiateRequest {
+    uint16_t StructureSize;  // Must be 36
+    uint16_t DialectCount;
+    uint16_t SecurityMode;
+    uint16_t Reserved;
+    uint32_t Capabilities;
+    uint64_t ClientGuid;     // Simplified to 8 bytes
+    uint32_t NegotiateContextOffset;
+    uint16_t NegotiateContextCount;
+    uint16_t Reserved2;
+    // Then dialect array
+} SMB2NegotiateRequest;
 
-	Ethical Reminder: Studying code to improve security is good practice. Introducing malicious backdoors is unethical and often illegal.
+typedef struct _SMB2NegotiateResponse {
+    uint16_t StructureSize;   // Must be 65 in real SMB2
+    uint16_t SecurityMode;
+    uint16_t DialectRevision;
+    uint16_t NegotiateContextCount;
+    uint32_t ServerGuid;      // Simplified
+    uint32_t Capabilities;
+    uint32_t MaxTransSize;
+    uint32_t MaxReadSize;
+    uint32_t MaxWriteSize;
+    uint64_t SystemTime;
+    uint64_t ServerStartTime;
+    // etc...
+} SMB2NegotiateResponse;
 
-Below Is a More Detailed Overview of SMBv2 (Including SMB 2.x and 3.x) Capabilities
+/* SMB2 SESSION_SETUP */
+typedef struct _SMB2SessionSetupRequest {
+    uint16_t StructureSize;  // Must be 25
+    uint8_t  Flags;
+    uint8_t  SecurityMode;
+    uint32_t Capabilities;
+    uint32_t Channel;
+    uint16_t SecurityBufferOffset;
+    uint16_t SecurityBufferLength;
+    // Security buffer follows...
+} SMB2SessionSetupRequest;
 
-Modern SMBv2/3 is the default protocol on most Windows versions and is fully supported by Samba, delivering major performance, security, and reliability improvements.
+typedef struct _SMB2SessionSetupResponse {
+    uint16_t StructureSize;  // Must be 9
+    uint16_t SessionFlags;
+    uint16_t SecurityBufferOffset;
+    uint16_t SecurityBufferLength;
+    // ...
+} SMB2SessionSetupResponse;
 
-1. Core Improvements from SMBv1 to SMBv2
-	1.	Reduced Command Set: Fewer than 20 commands (down from ~100 in SMBv1).
-	2.	Pipelining / Compounding: Multiple operations per network round trip, reducing latency.
-	3.	Larger Reads/Writes: Enabling bigger I/O to boost file transfer performance.
-	4.	Credit-Based Flow Control: Dynamically balances I/O load and speeds up large operations.
-	5.	Better Scalability: Enhanced for enterprise file servers and virtualization.
-	6.	Enhanced Security: SMBv2 laid groundwork for stronger signing, encryption, and modern authentication (Kerberos, NTLMv2).
+/* SMB2 TREE_CONNECT */
+typedef struct _SMB2TreeConnectRequest {
+    uint16_t StructureSize;  // Must be 9
+    uint16_t Reserved;
+    uint32_t PathOffset;
+    uint32_t PathLength;
+    // Path follows
+} SMB2TreeConnectRequest;
 
-2. Evolution into SMB 2.1, SMB 3.0, and Beyond
-	•	SMB 2.1: Directory leasing, improved caching (Windows 7/Server 2008 R2).
-	•	SMB 3.0: Encryption, multichannel, RDMA support, continuous availability (Windows 8/Server 2012).
-	•	SMB 3.1.1: Pre-authentication integrity, stronger crypto, more secure negotiation (Windows 10/Server 2016+).
+typedef struct _SMB2TreeConnectResponse {
+    uint16_t StructureSize;  // Must be 16
+    uint8_t  ShareType;
+    uint8_t  Reserved;
+    uint32_t ShareFlags;
+    uint32_t Capabilities;
+    uint32_t MaximalAccess;
+} SMB2TreeConnectResponse;
 
-3. Capabilities in a Modern SMBv2/3 Server (Like Samba)
-	1.	File & Printer Sharing with robust ACLs.
-	2.	Session/Authentication Management (NTLM, Kerberos, etc.).
-	3.	Packet Signing & Encryption (SMB3 adds encryption for data-in-transit).
-	4.	Support for Large Transfers (multichannel, large I/O).
-	5.	OpLocks / Leases for efficient client caching.
-	6.	Continuous Availability in clustered deployments.
-	7.	Snapshot/VSS Integration on Windows, supported in some Samba configurations.
-	8.	Extensibility: SMB2/3 protocol can evolve without massive rewrites.
+/* SMB2 CREATE */
+typedef struct _SMB2CreateRequest {
+    uint16_t StructureSize;     // Must be 57
+    uint8_t  SecurityFlags;
+    uint8_t  RequestedOplockLevel;
+    uint32_t ImpersonationLevel;
+    uint64_t SmbCreateFlags;
+    uint64_t Reserved;
+    uint32_t DesiredAccess;
+    uint32_t FileAttributes;
+    uint32_t ShareAccess;
+    uint32_t CreateDisposition;
+    uint32_t CreateOptions;
+    uint16_t NameOffset;
+    uint16_t NameLength;
+    uint32_t CreateContextsOffset;
+    uint32_t CreateContextsLength;
+    // Filename follows...
+} SMB2CreateRequest;
 
-4. Encouragement for Learning and Exploration
-	•	Performance Tuning: Experiment with credits, compound requests, and multichannel.
-	•	Security Research: Explore signing, encryption, pre-auth integrity, and how they thwart MITM attacks.
-	•	Interoperability: Connect Samba on Linux with Windows-based clients and servers—ideal for cross-platform testing.
-	•	Reverse-Engineering: Samba’s open source plus Ghidra’s analysis offers a transparent view into SMB’s internal workings.
+typedef struct _SMB2CreateResponse {
+    uint16_t StructureSize; // Must be 89
+    uint8_t  OplockLevel;
+    uint8_t  Flags;
+    uint32_t CreateAction;
+    uint64_t CreationTime;
+    uint64_t LastAccessTime;
+    uint64_t LastWriteTime;
+    uint64_t ChangeTime;
+    uint64_t AllocationSize;
+    uint64_t EndofFile;
+    uint32_t FileAttributes;
+    // 16-byte FileId
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+    // optional create contexts
+} SMB2CreateResponse;
 
-	Many advanced labs (government, corporate, academic) train professionals on real protocols and open-source stacks. By diving into SMBv2/3, you’ll strengthen your ability to configure, secure, and debug one of the world’s most critical file-sharing protocols.
+/* SMB2 WRITE/READ (for the RPC data) */
+typedef struct _SMB2WriteRequest {
+    uint16_t StructureSize; // Must be 49
+    uint16_t DataOffset;
+    uint32_t Length;
+    uint64_t Offset;
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+    uint32_t Channel;
+    uint32_t RemainingBytes;
+    uint16_t WriteChannelInfoOffset;
+    uint16_t WriteChannelInfoLength;
+    uint32_t Flags;
+    // Then the data
+} SMB2WriteRequest;
 
-5. Conclusion
-	•	SMBv2/3 is far more robust and secure than SMBv1, incorporating stronger authentication, encryption, and performance features.
-	•	Samba provides a fully open-source implementation. Dive in, clone the repo, and explore how modern file servers handle complex network interactions.
-	•	Exploit Research: EternalBlue-level vulnerabilities illustrate the complexity of real RCE flaws. They typically arise from hidden memory corruption or subtle logic bugs, not simplistic “magic commands.”
-	•	Practical Knowledge: Understanding SMBv2/3 is invaluable—whether you’re securing enterprise servers, analyzing protocols in a research lab, or just curious how large-scale file sharing really works.
+typedef struct _SMB2WriteResponse {
+    uint16_t StructureSize; // Must be 17
+    uint16_t Reserved;
+    uint32_t Count;
+    uint32_t Remaining;
+    uint16_t WriteChannelInfoOffset;
+    uint16_t WriteChannelInfoLength;
+} SMB2WriteResponse;
 
-Proceed ethically: Learning is encouraged, but injecting malicious backdoors or exploiting vulnerabilities without authorization is not. If you aim to discover or patch potential bugs, do so responsibly and contribute back to the community when possible.
+typedef struct _SMB2ReadRequest {
+    uint16_t StructureSize; // Must be 49
+    uint8_t  Padding;
+    uint8_t  Reserved;
+    uint32_t Length;
+    uint64_t Offset;
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+    uint32_t MinimumCount;
+    uint32_t Channel;
+    uint32_t RemainingBytes;
+    uint16_t ReadChannelInfoOffset;
+    uint16_t ReadChannelInfoLength;
+} SMB2ReadRequest;
 
+typedef struct _SMB2ReadResponse {
+    uint16_t StructureSize; // Must be 17
+    uint8_t  DataOffset;
+    uint8_t  Reserved;
+    uint32_t DataLength;
+    uint32_t DataRemaining;
+    uint32_t Reserved2;
+    // data follows
+} SMB2ReadResponse;
+
+#pragma pack(pop)
+
+//--------------------------------------------------
+//       Simple Helpers / Global State
+//--------------------------------------------------
+static uint64_t gMessageId = 1;
+static uint64_t gSessionId = 0;
+static uint32_t gTreeId    = 0;
+static int      gSock      = -1;
+
+static uint64_t gPipeFidPersistent = 0;
+static uint64_t gPipeFidVolatile   = 0;
+
+//--------------------------------------------------
+// sendSMB2Request: send an SMB2 header + payload
+//--------------------------------------------------
+int sendSMB2Request(SMB2Header *hdr, const void *payload, size_t payloadLen) {
+    ssize_t sent = send(gSock, hdr, sizeof(SMB2Header), 0);
+    if (sent < 0) {
+        perror("send header");
+        return -1;
+    }
+    if (payload && payloadLen > 0) {
+        sent = send(gSock, payload, payloadLen, 0);
+        if (sent < 0) {
+            perror("send payload");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+//--------------------------------------------------
+// recvSMB2Response: recv an SMB2 header + payload
+//--------------------------------------------------
+int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *outPayloadLen) {
+    ssize_t recvd = recv(gSock, outHdr, sizeof(SMB2Header), 0);
+    if (recvd <= 0) {
+        perror("recv SMB2 header");
+        return -1;
+    }
+    if (recvd < (ssize_t)sizeof(SMB2Header)) {
+        fprintf(stderr, "Incomplete SMB2 header.\n");
+        return -1;
+    }
+
+    // Validate signature
+    if (!(outHdr->ProtocolId[0] == 0xFE &&
+          outHdr->ProtocolId[1] == 'S'  &&
+          outHdr->ProtocolId[2] == 'M'  &&
+          outHdr->ProtocolId[3] == 'B')) {
+        fprintf(stderr, "Invalid SMB2 signature.\n");
+        return -1;
+    }
+
+    // Non-blocking peek to see how much is waiting
+    int peekLen = recv(gSock, outBuf, bufSize, MSG_DONTWAIT);
+    if (peekLen > 0) {
+        int realLen = recv(gSock, outBuf, peekLen, 0);
+        if (realLen < 0) {
+            perror("recv payload");
+            return -1;
+        }
+        *outPayloadLen = realLen;
+    } else {
+        *outPayloadLen = 0;
+    }
+
+    return 0;
+}
+
+//--------------------------------------------------
+// buildSMB2Header: fill out common fields
+//--------------------------------------------------
+void buildSMB2Header(uint16_t command, uint32_t treeId, uint64_t sessionId, SMB2Header *hdrOut) {
+    memset(hdrOut, 0, sizeof(SMB2Header));
+    hdrOut->ProtocolId[0] = 0xFE;
+    hdrOut->ProtocolId[1] = 'S';
+    hdrOut->ProtocolId[2] = 'M';
+    hdrOut->ProtocolId[3] = 'B';
+    hdrOut->StructureSize = 64;
+    hdrOut->Command       = command;
+    hdrOut->Credits       = 1;  // minimal
+    hdrOut->MessageId     = gMessageId++;
+    hdrOut->TreeId        = treeId;
+    hdrOut->SessionId     = sessionId;
+}
+
+//--------------------------------------------------
+// doNegotiate: basic negotiate
+//--------------------------------------------------
+int doNegotiate() {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_NEGOTIATE, 0, 0, &hdr);
+
+    SMB2NegotiateRequest req;
+    memset(&req, 0, sizeof(req));
+    req.StructureSize = 36;
+    req.DialectCount  = 3;
+    uint16_t dialects[3] = { SMB2_DIALECT_0202, SMB2_DIALECT_0210, SMB2_DIALECT_0300 };
+
+    // send
+    if (sendSMB2Request(&hdr, &req, sizeof(req)) < 0) return -1;
+    if (send(gSock, dialects, sizeof(dialects), 0) < 0) {
+        perror("send dialects");
+        return -1;
+    }
+
+    // recv
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) return -1;
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "Negotiate failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    printf("[Client] SMB2 NEGOTIATE OK. payloadLen=%zd\n", payloadLen);
+    return 0;
+}
+
+//--------------------------------------------------
+// doSessionSetup: minimal session
+//--------------------------------------------------
+int doSessionSetup() {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_SESSION_SETUP, 0, 0, &hdr);
+
+    SMB2SessionSetupRequest ssreq;
+    memset(&ssreq, 0, sizeof(ssreq));
+    ssreq.StructureSize = 25;
+
+    if (sendSMB2Request(&hdr, &ssreq, sizeof(ssreq)) < 0) return -1;
+
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) return -1;
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "SessionSetup failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    gSessionId = respHdr.SessionId;
+    printf("[Client] SMB2 SESSION_SETUP OK. SessionId=0x%llx\n",
+           (unsigned long long)gSessionId);
+    return 0;
+}
+
+//--------------------------------------------------
+// doTreeConnect: connect to "\\server\IPC$"
+//--------------------------------------------------
+int doTreeConnect(const char *ipcPath) {
+    // For Windows, typical UNC path is something like "\\192.168.x.x\IPC$"
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_TREE_CONNECT, 0, gSessionId, &hdr);
+
+    SMB2TreeConnectRequest tcreq;
+    memset(&tcreq, 0, sizeof(tcreq));
+    tcreq.StructureSize = 9;
+    tcreq.PathOffset    = sizeof(tcreq);
+    uint32_t pathLen    = (uint32_t)strlen(ipcPath);
+    tcreq.PathLength    = pathLen;
+
+    size_t reqSize = sizeof(tcreq) + pathLen;
+    char *reqBuf = (char *)malloc(reqSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &tcreq, sizeof(tcreq));
+    memcpy(reqBuf + sizeof(tcreq), ipcPath, pathLen);
+
+    if (sendSMB2Request(&hdr, reqBuf, reqSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "TreeConnect to %s failed, status=0x%08X\n",
+                ipcPath, respHdr.Status);
+        return -1;
+    }
+    if (payloadLen < (ssize_t)sizeof(SMB2TreeConnectResponse)) {
+        fprintf(stderr, "TreeConnect response too small\n");
+        return -1;
+    }
+
+    gTreeId = respHdr.TreeId;
+    printf("[Client] TREE_CONNECT to %s OK. TreeId=0x%08X\n", ipcPath, gTreeId);
+    return 0;
+}
+
+//--------------------------------------------------
+// doOpenPipe: open named pipe, e.g. "\\PIPE\\svcctl"
+//             standard SMB2_CREATE with a filename
+//--------------------------------------------------
+int doOpenPipe(const char *pipeName) {
+    // pipeName is typically something like "\\PIPE\\svcctl"
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_CREATE, gTreeId, gSessionId, &hdr);
+
+    SMB2CreateRequest creq;
+    memset(&creq, 0, sizeof(creq));
+    creq.StructureSize        = 57;
+    creq.RequestedOplockLevel = 0; // none
+    creq.ImpersonationLevel   = 2; // SecurityImpersonation
+    creq.DesiredAccess        = 0x001F01FF; // GENERIC_ALL (over-simplified)
+    creq.FileAttributes       = 0;
+    creq.ShareAccess          = 3; // read/write share
+    creq.CreateDisposition    = 1; // FILE_OPEN
+    creq.CreateOptions        = 0; 
+    creq.NameOffset           = sizeof(SMB2CreateRequest);
+    // The pipe name must be in "UTF-16LE" in real SMB2.
+    // Here we’ll do simplistic ASCII->UTF-16.
+
+    uint32_t pipeNameLenBytes = (uint32_t)(strlen(pipeName) * 2);
+    creq.NameLength = (uint16_t)pipeNameLenBytes;
+
+    size_t totalSize = sizeof(creq) + pipeNameLenBytes;
+    unsigned char *reqBuf = (unsigned char *)malloc(totalSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc doOpenPipe failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &creq, sizeof(creq));
+
+    // Convert ASCII to basic UTF-16LE
+    unsigned char *pName = reqBuf + sizeof(creq);
+    for (size_t i = 0; i < strlen(pipeName); i++) {
+        pName[i*2]   = (unsigned char)pipeName[i];
+        pName[i*2+1] = 0x00;
+    }
+
+    if (sendSMB2Request(&hdr, reqBuf, totalSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // get response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) return -1;
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "OpenPipe '%s' failed, status=0x%08X\n",
+                pipeName, respHdr.Status);
+        return -1;
+    }
+
+    if (payloadLen < (ssize_t)sizeof(SMB2CreateResponse)) {
+        fprintf(stderr, "CreateResponse too small.\n");
+        return -1;
+    }
+    SMB2CreateResponse *cres = (SMB2CreateResponse *)buf;
+    gPipeFidPersistent = cres->FileIdPersistent;
+    gPipeFidVolatile   = cres->FileIdVolatile;
+
+    printf("[Client] Named pipe '%s' opened OK. FID=(%llx:%llx)\n",
+           pipeName,
+           (unsigned long long)gPipeFidPersistent,
+           (unsigned long long)gPipeFidVolatile);
+    return 0;
+}
+
+//--------------------------------------------------
+// doWritePipe: send raw bytes into the named pipe
+//--------------------------------------------------
+int doWritePipe(const unsigned char *data, size_t dataLen) {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_WRITE, gTreeId, gSessionId, &hdr);
+
+    SMB2WriteRequest wreq;
+    memset(&wreq, 0, sizeof(wreq));
+    wreq.StructureSize      = 49;
+    wreq.DataOffset         = sizeof(SMB2WriteRequest);
+    wreq.Length             = (uint32_t)dataLen;
+    wreq.FileIdPersistent   = gPipeFidPersistent;
+    wreq.FileIdVolatile     = gPipeFidVolatile;
+
+    size_t totalSize = sizeof(wreq) + dataLen;
+    unsigned char *reqBuf = (unsigned char*)malloc(totalSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc doWritePipe failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &wreq, sizeof(wreq));
+    memcpy(reqBuf + sizeof(wreq), data, dataLen);
+
+    if (sendSMB2Request(&hdr, reqBuf, totalSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // read response
+    SMB2Header respHdr;
+    unsigned char buf[512];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) return -1;
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "WritePipe failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    if (payloadLen < (ssize_t)sizeof(SMB2WriteResponse)) {
+        fprintf(stderr, "WriteResponse too small\n");
+        return -1;
+    }
+    SMB2WriteResponse *wres = (SMB2WriteResponse *)buf;
+    printf("[Client] Wrote %u bytes to pipe.\n", wres->Count);
+    return 0;
+}
+
+//--------------------------------------------------
+// doReadPipe: read back from the pipe
+//--------------------------------------------------
+int doReadPipe(unsigned char *outBuf, size_t outBufSize, uint32_t *outBytesRead) {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_READ, gTreeId, gSessionId, &hdr);
+
+    SMB2ReadRequest rreq;
+    memset(&rreq, 0, sizeof(rreq));
+    rreq.StructureSize     = 49;
+    rreq.Length            = (uint32_t)outBufSize;
+    rreq.FileIdPersistent  = gPipeFidPersistent;
+    rreq.FileIdVolatile    = gPipeFidVolatile;
+
+    if (sendSMB2Request(&hdr, &rreq, sizeof(rreq)) < 0) return -1;
+
+    SMB2Header respHdr;
+    unsigned char buf[2048];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) return -1;
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "ReadPipe failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    if (payloadLen < (ssize_t)sizeof(SMB2ReadResponse)) {
+        fprintf(stderr, "ReadResponse too small\n");
+        return -1;
+    }
+    SMB2ReadResponse *rres = (SMB2ReadResponse *)buf;
+
+    uint32_t dataLen = rres->DataLength;
+    if (dataLen > 0) {
+        uint8_t *dataStart = buf + rres->DataOffset;
+        if (rres->DataOffset + dataLen <= (uint32_t)payloadLen) {
+            // Copy to outBuf
+            if (dataLen > outBufSize) dataLen = (uint32_t)outBufSize;
+            memcpy(outBuf, dataStart, dataLen);
+        } else {
+            fprintf(stderr, "Data offset/length out of payload bounds!\n");
+            return -1;
+        }
+    }
+    *outBytesRead = dataLen;
+    printf("[Client] Read %u bytes from pipe.\n", dataLen);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// main
+//--------------------------------------------------
+int main(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <server_ip> <server_port>\n", argv[0]);
+        fprintf(stderr, "Example: %s 192.168.1.10 445\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *serverIp = argv[1];
+    int port = atoi(argv[2]);
+
+    // 1. Create socket
+    gSock = socket(AF_INET, SOCK_STREAM, 0);
+    if (gSock < 0) {
+        perror("socket");
+        return EXIT_FAILURE;
+    }
+
+    // 2. Connect
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port   = htons(port);
+    if (inet_pton(AF_INET, serverIp, &serverAddr.sin_addr) <= 0) {
+        perror("inet_pton");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    if (connect(gSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("connect");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+    printf("[Client] Connected to %s:%d\n", serverIp, port);
+
+    // 3. SMB2 NEGOTIATE
+    if (doNegotiate() < 0) {
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 4. SMB2 SESSION_SETUP
+    if (doSessionSetup() < 0) {
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 5. SMB2 TREE_CONNECT to IPC$
+    // Construct a UNC path like "\\\\192.168.1.10\\IPC$"
+    char ipcPath[256];
+    snprintf(ipcPath, sizeof(ipcPath), "\\\\%s\\IPC$", serverIp);
+    if (doTreeConnect(ipcPath) < 0) {
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 6. SMB2 CREATE for named pipe, e.g. "\\PIPE\\svcctl"
+    if (doOpenPipe("\\PIPE\\svcctl") < 0) {
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 7. Now we can doWritePipe / doReadPipe to exchange RPC calls
+    //    In a real scenario, we’d send DCERPC bind + requests to create a service
+    //    that executes our desired command. This is a placeholder:
+
+    printf("[Client] Sending a mock RPC request...\n");
+    const unsigned char fakeRpcRequest[] = {
+        /* This is not a real DCERPC packet—just a placeholder. */
+        0x05, 0x00, 0x0B, 0x03, // typical DCE/MSRPC version byte?
+        // etc. You would put real MS-RPC data here for SVCCTL calls
+    };
+    if (doWritePipe(fakeRpcRequest, sizeof(fakeRpcRequest)) < 0) {
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 8. Read the (fake) response
+    unsigned char readBuf[512];
+    memset(readBuf, 0, sizeof(readBuf));
+    uint32_t bytesRead = 0;
+    if (doReadPipe(readBuf, sizeof(readBuf), &bytesRead) < 0) {
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 9. Dump the response (if any)
+    if (bytesRead > 0) {
+        printf("[Client] Pipe response (hex):\n");
+        for (uint32_t i = 0; i < bytesRead; i++) {
+            printf("%02X ", readBuf[i]);
+        }
+        printf("\n");
+    } else {
+        printf("[Client] No data returned from pipe.\n");
+    }
+
+    // 10. Close up
+    close(gSock);
+    printf("[Client] Done.\n");
+    return EXIT_SUCCESS;
+}
+
+</details>
+
+
+9. Conclusion & Ethical Reminder
+	1.	SMBv2/3 is a critical modern file-sharing protocol, offering improved security, performance, and advanced capabilities like encryption and multi-channel support.
+	2.	smb2_pipe_exec_client.c is an educational demonstration of the low-level steps needed to talk to an SMB named pipe. It shows negotiate, session setup, tree connect, create, write, and read.
+	3.	Real DCERPC usage is significantly more complex—this code is not a production solution or a ready-made exploit.
+	4.	Security Best Practices: Always test in isolated lab environments. Implement proper authentication and input validation.
+	5.	Ethical Use: Study and refine your network programming and security research skills responsibly. Unauthorized or malicious usage can be illegal and harmful.
+
+Thank you for exploring SMBv2 named pipe fundamentals! For more robust reference implementations, see the Samba codebase or Microsoft’s official protocol documentation (MS-SMB2, MS-RPC, MS-SVCCTL, etc.).
+
+Happy coding—and stay safe in your security research!
