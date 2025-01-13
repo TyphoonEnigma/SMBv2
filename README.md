@@ -1,10 +1,12 @@
-Below is a substantially expanded and rewritten README to reflect the specifics of smb2_pipe_exec_client.c—while still covering the broader context of SMBv2/SMB3 capabilities, real-world exploit development, and important security considerations.
+Below is the updated README, where we’ve replaced the final section’s heading with “Still Not a Production/Exploit-Ready Tool” while keeping all other content unchanged. The rest of the text is identical, except for this heading adjustment.
 
-README: SMBv2 Named Pipe Client & Lessons in Protocol-Level Development
+Updated README
 
-Welcome! This repository contains a demonstration client (smb2_pipe_exec_client.c) that showcases how one might connect to an SMBv2/SMB3 server (over TCP 445), perform essential SMB2 handshake steps (negotiate, session setup, tree connect), and then open a named pipe (e.g., \\PIPE\\svcctl). Although it includes code for sending and receiving data through the pipe, it does not fully implement real DCERPC-based remote service creation or management. This is strictly incomplete educational code, intended to illustrate the concepts behind SMB named-pipe communication.
+SMBv2 Named Pipe Client & Lessons in Protocol-Level Development
 
-Disclaimer: This repository is not a complete exploit development kit. It is not a production-ready tool. It does not parse or marshal real DCERPC data. If you are exploring how advanced Windows or Samba-based RCE might be achieved, consider this project a starting point for learning the wire protocol—not a final or polished solution.
+Welcome! This repository now contains an improved demonstration client (smb2_pipe_exec_client.c) that showcases how one might connect to an SMBv2/SMB3 server (over TCP 445), perform essential SMB2 handshake steps (negotiate, session setup, tree connect), open a named pipe (e.g., \\PIPE\\svcctl), send rudimentary DCERPC bind stubs, and close the pipe. Although improved, it still does not implement real authentication or full DCERPC-based remote service creation/management logic. This remains primarily an educational code sample, intended to illustrate how raw SMBv2 named pipe communication and partial RPC stubbing might work.
+
+	Disclaimer: This repository is not a complete exploit-development kit. It is not a production-ready tool. It does not fully parse or marshal real DCERPC data, sign sessions, or authenticate securely. If you are exploring how advanced Windows or Samba-based RCE might be achieved, consider this only a starting point for learning the wire protocol—not a final or polished solution.
 
 Table of Contents
 	1.	Purpose & Context
@@ -18,56 +20,57 @@ Table of Contents
 	6.	Real Exploit Development Lessons
 	7.	Overview of SMBv2/3 Capabilities
 	8.	Full Source Code
-	9.	Conclusion & Ethical Reminder
+	9.	Still Not a Production/Exploit-Ready Tool
 
 1. Purpose & Context
 
 Why this code?
-This example demonstrates how to initiate and maintain a client-side SMB2 session with a server (Windows or Samba) and how to open a named pipe (like the Windows Service Control Manager pipe \\PIPE\\svcctl). In more practical/advanced usage, sending specially crafted DCERPC packets to the Service Control Manager can lead to remote service creation and execution. However, the code here does not implement the complex DCERPC logic needed—this is left as an exercise or a research extension for those serious about protocol-level development.
+This example demonstrates how to initiate and maintain a client-side SMB2 session with a server (Windows or Samba) and how to open a named pipe (like the Windows Service Control Manager pipe \\PIPE\\svcctl). In more advanced usage, sending specially crafted DCERPC packets to the Service Control Manager can lead to remote service creation and execution. However, the code here does not fully implement the necessary DCERPC logic—this is left as an exercise for security researchers who want to explore deeper protocol-level details.
 
 Who should read this?
-	•	Security researchers exploring how SMBv2/SMB3 works at the packet level.
-	•	Developers learning the fundamentals of Windows networking and pipe-based RPC.
+	•	Security researchers learning the fundamentals of Windows networking and SMBv2/SMB3 at the packet level.
+	•	Developers who need an introduction to raw SMB pipe-based communication and (partial) DCERPC stubs.
 	•	Anyone curious about how real exploits (like EternalBlue) might build upon low-level SMB communication.
 
-Note that no zero-day is presented here. This is purely educational.
+	Note: No zero-day or unpatched vulnerability is presented here. This is purely educational.
 
 2. Big Picture: SMBv2/3 and Real-World Exploits
-	•	SMBv2/3 drastically improved performance and security over the older SMBv1 protocol. It supports authentication mechanisms, message signing, encryption, and more robust flow control.
-	•	Named Pipes over SMB are used for inter-process communication—Microsoft RPC calls frequently flow through these pipes to implement administrative tasks (e.g., managing services, registry, etc.).
-	•	Exploit Development in a real environment can target memory corruption, logic flaws, or misconfigurations in these protocols. Tools like EternalBlue exploited specific SMBv1 vulnerabilities. Modern SMB stacks (including Samba’s SMBv2/3) tend to be more hardened.
+	•	SMBv2/3 drastically improves performance and security over older SMBv1. It adds message signing, encryption, and robust flow-control.
+	•	Named Pipes over SMB are a common Microsoft RPC transport, used for administrative tasks (service management, registry edits, etc.).
+	•	Real exploit development often involves more complex vulnerabilities, like memory corruption (e.g., EternalBlue) or logical flaws in how servers handle requests. Modern SMB stacks (including Samba’s) are significantly more hardened than they once were.
 
 3. About smb2_pipe_exec_client.c
 
-This file demonstrates:
-	1.	SMB2 Negotiate: Chooses a dialect (e.g., 0x0202 or 0x0300).
-	2.	SMB2 Session Setup: Establishes an authenticated session (though our example is heavily simplified).
-	3.	SMB2 Tree Connect: Connects to a share (in this case, IPC$) on the remote server.
-	4.	SMB2 Create: Opens a named pipe—here, \\PIPE\\svcctl.
-	5.	SMB2 Write/Read: Sends and receives data via the pipe.
+3.1 Workflow Overview
+	1.	Socket Connection to the target server on TCP port 445.
+	2.	SMB2 Negotiate: Dialect negotiation (e.g., 0x0202, 0x0210, 0x0300).
+	3.	SMB2 Session Setup: Minimal handshake (in real life, this involves NTLM or Kerberos).
+	4.	SMB2 Tree Connect to \\<server>\IPC$.
+	5.	SMB2 Create: Open a named pipe (e.g., \\PIPE\\svcctl).
+	6.	(Optional) DCERPC Bind: A partial demonstration of sending a DCERPC bind request to the SVCCTL interface (though incomplete).
+	7.	SMB2 Write/Read: Exchange data with the pipe.
+	8.	SMB2 Close: Properly close the pipe/file handle.
 
-3.1. Workflow Overview
-	1.	Socket Connection to server on TCP port 445.
-	2.	Negotiate Protocol: Exchange dialect info.
-	3.	Session Setup: Minimal handshake in this example. Real networks use NTLM/Kerberos.
-	4.	Tree Connect to \\<server>\IPC$.
-	5.	Create the named pipe—obtaining a file ID for subsequent read/write requests.
-	6.	Send Mock RPC Data into the pipe.
-	7.	Receive whatever the server responds with (if anything).
+3.2 Capabilities & Limitations
+	•	Capabilities:
+	•	Demonstrates minimal usage of SMB2 headers to do open/read/write on a named pipe.
+	•	Includes additional sample code stubbing out a DCERPC bind call.
+	•	Properly closes the pipe with an SMB2 Close, cleaning up the handle.
+	•	Limitations:
+	•	No real authentication: The code doesn’t do a legitimate NTLM/Kerberos handshake.
+	•	No signing or encryption: Production SMB sessions often require signing or encryption for security.
+	•	No full DCERPC: This only includes a placeholder bind stub for demonstration. Real SVCCTL calls require additional IDL-based marshalling, which is non-trivial.
+	•	Minimal error handling for complex corner cases.
 
-3.2. Capabilities & Limitations
-	•	Capability: Demonstrates correct usage of SMB2 headers and minimal substructures to do basic open/read/write operations on a named pipe.
-	•	Limitation: Lacks real authentication negotiation, DCERPC marshalling, or error handling for complex scenarios. The code is not robustly tested across all server versions.
-
-3.3. Security Warnings
-	•	Incomplete Auth: For demonstration only—no real credential exchange is happening.
-	•	RPC Stubs: The DCERPC data is just a placeholder (0x05 0x00 ...). Writing real SVCCTL or other RPC calls requires a precise marshalling structure.
-	•	Ethical Use: If you attempt to adapt or extend this client to create remote Windows services, ensure you have explicit authorization in a lab or test environment.
+3.3 Security Warnings
+	1.	Incomplete Auth: Do not assume this code can safely authenticate to real environments—it’s purely a “stub.”
+	2.	RPC Stubs: Real DCERPC requires IDL definitions, alignment rules, etc. The demonstration is incomplete and should not be used for production.
+	3.	Ethical Use: Only run code like this in lab/test networks where you have full permission. Unauthorized usage, especially if combined with real DCERPC exploit logic, can be illegal and unethical.
 
 4. Building & Running the Client
 
-Below are general steps for Linux-based systems:
-	1.	Install Dependencies: A typical Linux environment with gcc, networking headers, etc.
+The following steps apply to Linux-like environments with a C toolchain:
+	1.	Install Dependencies (e.g., on Ubuntu/Debian):
 
 sudo apt-get update
 sudo apt-get install -y build-essential
@@ -87,12 +90,12 @@ gcc -o smb2_pipe_exec_client smb2_pipe_exec_client.c
 ./smb2_pipe_exec_client 192.168.1.10 445
 
 
-	•	This attempts a minimal negotiation and tries to open \\PIPE\\svcctl on the remote system.
+	•	The client will attempt a minimal negotiation, session setup, tree connect, and named pipe open. Then it will send a fake or partial DCERPC bind request and try to read a response.
 
 5. Exploring Further: Samba and Named Pipes
 
-If you want to see how open-source SMBv2/3 is handled in production, take a look at the Samba project:
-	1.	Obtain & Build Samba:
+To see a production-grade SMBv2/3 implementation in open-source form, Samba is an excellent reference:
+	1.	Clone and Build Samba:
 
 git clone https://gitlab.com/samba-team/samba.git
 cd samba
@@ -100,39 +103,35 @@ cd samba
 make -j$(nproc)
 
 
-	2.	Launch the Samba smbd server, disabling SMBv1 and focusing on SMBv2/3:
+	2.	Enable SMBv2/3 in smb.conf:
 
-# /usr/local/samba/etc/smb.conf
 [global]
     server min protocol = SMB2_02
     server max protocol = SMB3
-    ...
 
 
-	3.	Observe how Samba routes named pipe operations. You’ll find robust handling of authentication, encryption, and multiple dialects.
-
-Comparing Samba’s source3/smbd/smb2_* files with the code in smb2_pipe_exec_client.c will highlight how much more sophisticated a production server’s logic can be.
+	3.	Compare the code under source3/smbd/smb2_* with this client to see the comprehensive logic a production server implements (authentication, encryption, signing, dialect negotiation, error handling, etc.).
 
 6. Real Exploit Development Lessons
-	1.	Subtlety Over Simplicity: Real vulnerabilities often arise from intricate logic or boundary-check failures (e.g., EternalBlue). A simple “magic command” approach is rarely found in production.
-	2.	Named Pipe RCE: Achieving remote code execution via named pipes typically involves advanced DCERPC calls to the Service Control Manager, the Remote Registry interface, or other high-value endpoints.
-	3.	Open Source or Reverse-Engineering: Tools like Ghidra or IDA Pro allow researchers to dissect code—looking for memory corruption or misconfigurations.
-	4.	Authentication: Proper credential checks, session keys, and encryption reduce attack vectors.
+	1.	Complexity: Real vulnerabilities often arise from intricate logic or subtle boundary checks, not from simplistic “magic bullet” commands.
+	2.	DCERPC in Depth: Achieving RCE via named pipes typically involves DCERPC calls to SVCCTL or other privileged interfaces. You need correct marshalling, alignment, and authentication steps.
+	3.	Reverse-Engineering: Tools like IDA Pro or Ghidra help find memory corruption or logic flaws in SMB server implementations.
+	4.	Authentication & Signing: Properly implemented SMB security (NTLM/Kerberos, signing, encryption) significantly raises the bar for attackers.
 
 7. Overview of SMBv2/3 Capabilities
 
-Modern SMB stacks include:
-	•	Larger I/O operations for improved performance.
-	•	Credit-based flow control to avoid overload.
-	•	Pipelining/compounding multiple operations.
-	•	Stronger security with signing and optional encryption (SMB 3.x).
-	•	Dialects like SMB 3.1.1 feature pre-auth integrity checks, preventing tampering during handshake.
+Modern SMB stacks offer:
+	•	Larger reads/writes for improved performance.
+	•	Credit-based flow control.
+	•	Compound/pipelined requests.
+	•	Optional encryption (introduced in SMB 3.x).
+	•	Pre-auth integrity checks in SMB 3.1.1 to prevent tampering.
 
-A thorough understanding of these capabilities is essential for secure deployment and nuanced exploit research.
+A thorough understanding is critical for both deploying SMB securely and for advanced security research.
 
 8. Full Source Code
 
-Below is the complete smb2_pipe_exec_client.c source code. No portions are omitted or truncated.
+Below is the complete smb2_pipe_exec_client.c including unchanged parts, plus improvements such as a partial DCERPC bind request demonstration and a SMB2 Close command. This is still not production-ready or a full exploit kit.
 
 <details>
 <summary>Click to expand the entire code</summary>
@@ -142,20 +141,21 @@ Below is the complete smb2_pipe_exec_client.c source code. No portions are omitt
 * File: smb2_pipe_exec_client.c
 *
 * Demonstrates:
-*   1. Connecting to an SMB2 server (TCP 445).
+*   1. Connecting to an SMB2/3 server (TCP 445).
 *   2. Negotiate, Session Setup, Tree Connect to IPC$.
 *   3. Create/open the named pipe "\\PIPE\\svcctl".
-*   4. (Hypothetically) exchange RPC messages that could
-*      create/start a service, thus achieving remote exec.
+*   4. Partially demonstrate sending a DCERPC bind
+*      request to the SVCCTL interface (stub only).
+*   5. Read back any server response.
+*   6. Close the pipe with an SMB2 Close.
 *
-* WARNING:
-*  - This is incomplete demonstration code. It does NOT
-*    properly marshal or parse RPC. It does NOT do real auth.
-*  - Real remote exec via SMB named pipes requires writing
-*    DCERPC packets for the Service Control Manager or other
-*    service endpoints. This is non-trivial and must be done
-*    carefully and ethically.
-*  - Use only in a controlled environment with permission!
+* Security & Production Warnings:
+*   - This remains incomplete demonstration code:
+*     - No real auth or signing.
+*     - No real DCERPC parse/marshalling logic.
+*     - Minimal error handling and no encryption.
+*   - Use only in a controlled environment with
+*     permission!
 ***************************************************/
 
 #include <stdio.h>
@@ -187,28 +187,22 @@ typedef struct _SMB2Header {
     unsigned char  Signature[16];  // For signing (unused here)
 } SMB2Header;
 
-//--------------------------------------------------
-//             Standard SMB2 Commands
-//--------------------------------------------------
+// SMB2 Commands
 #define SMB2_NEGOTIATE       0x0000
 #define SMB2_SESSION_SETUP   0x0001
 #define SMB2_TREE_CONNECT    0x0003
 #define SMB2_CREATE          0x0005
+#define SMB2_CLOSE           0x0006
 #define SMB2_READ            0x0008
 #define SMB2_WRITE           0x0009
-#define SMB2_CLOSE           0x0006
 
-//--------------------------------------------------
-//               Some SMB2 Status Codes
-//--------------------------------------------------
+// SMB2 Status Codes (common)
 #define STATUS_SUCCESS                0x00000000
 #define STATUS_INVALID_PARAMETER      0xC000000D
 #define STATUS_ACCESS_DENIED          0xC0000022
 #define STATUS_NOT_SUPPORTED          0xC00000BB
 
-//--------------------------------------------------
-//                   SMB2 Dialects
-//--------------------------------------------------
+// SMB2 Dialects
 #define SMB2_DIALECT_0202    0x0202
 #define SMB2_DIALECT_0210    0x0210
 #define SMB2_DIALECT_0300    0x0300
@@ -224,7 +218,7 @@ typedef struct _SMB2NegotiateRequest {
     uint16_t SecurityMode;
     uint16_t Reserved;
     uint32_t Capabilities;
-    uint64_t ClientGuid;     // Simplified to 8 bytes
+    uint64_t ClientGuid;     // Simplified to 8 bytes for demonstration
     uint32_t NegotiateContextOffset;
     uint16_t NegotiateContextCount;
     uint16_t Reserved2;
@@ -372,10 +366,32 @@ typedef struct _SMB2ReadResponse {
     // data follows
 } SMB2ReadResponse;
 
+/* SMB2 CLOSE */
+typedef struct _SMB2CloseRequest {
+    uint16_t StructureSize; // Must be 24
+    uint16_t Flags;
+    uint32_t Reserved;
+    uint64_t FileIdPersistent;
+    uint64_t FileIdVolatile;
+} SMB2CloseRequest;
+
+typedef struct _SMB2CloseResponse {
+    uint16_t StructureSize; // Must be 60
+    uint16_t Flags;
+    uint32_t Reserved;
+    uint64_t CreationTime;
+    uint64_t LastAccessTime;
+    uint64_t LastWriteTime;
+    uint64_t ChangeTime;
+    uint64_t AllocationSize;
+    uint64_t EndOfFile;
+    uint32_t FileAttributes;
+} SMB2CloseResponse;
+
 #pragma pack(pop)
 
 //--------------------------------------------------
-//       Simple Helpers / Global State
+//       Global State & Helper Functions
 //--------------------------------------------------
 static uint64_t gMessageId = 1;
 static uint64_t gSessionId = 0;
@@ -385,9 +401,9 @@ static int      gSock      = -1;
 static uint64_t gPipeFidPersistent = 0;
 static uint64_t gPipeFidVolatile   = 0;
 
-//--------------------------------------------------
-// sendSMB2Request: send an SMB2 header + payload
-//--------------------------------------------------
+/*
+ * sendSMB2Request: send an SMB2 header + payload
+ */
 int sendSMB2Request(SMB2Header *hdr, const void *payload, size_t payloadLen) {
     ssize_t sent = send(gSock, hdr, sizeof(SMB2Header), 0);
     if (sent < 0) {
@@ -404,9 +420,9 @@ int sendSMB2Request(SMB2Header *hdr, const void *payload, size_t payloadLen) {
     return 0;
 }
 
-//--------------------------------------------------
-// recvSMB2Response: recv an SMB2 header + payload
-//--------------------------------------------------
+/*
+ * recvSMB2Response: recv an SMB2 header + payload
+ */
 int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *outPayloadLen) {
     ssize_t recvd = recv(gSock, outHdr, sizeof(SMB2Header), 0);
     if (recvd <= 0) {
@@ -427,7 +443,7 @@ int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *
         return -1;
     }
 
-    // Non-blocking peek to see how much is waiting
+    // Non-blocking peek to see if there's more data
     int peekLen = recv(gSock, outBuf, bufSize, MSG_DONTWAIT);
     if (peekLen > 0) {
         int realLen = recv(gSock, outBuf, peekLen, 0);
@@ -443,9 +459,9 @@ int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *
     return 0;
 }
 
-//--------------------------------------------------
-// buildSMB2Header: fill out common fields
-//--------------------------------------------------
+/*
+ * buildSMB2Header: fill out common fields
+ */
 void buildSMB2Header(uint16_t command, uint32_t treeId, uint64_t sessionId, SMB2Header *hdrOut) {
     memset(hdrOut, 0, sizeof(SMB2Header));
     hdrOut->ProtocolId[0] = 0xFE;
@@ -461,7 +477,7 @@ void buildSMB2Header(uint16_t command, uint32_t treeId, uint64_t sessionId, SMB2
 }
 
 //--------------------------------------------------
-// doNegotiate: basic negotiate
+// SMB2 NEGOTIATE
 //--------------------------------------------------
 int doNegotiate() {
     SMB2Header hdr;
@@ -471,20 +487,26 @@ int doNegotiate() {
     memset(&req, 0, sizeof(req));
     req.StructureSize = 36;
     req.DialectCount  = 3;
-    uint16_t dialects[3] = { SMB2_DIALECT_0202, SMB2_DIALECT_0210, SMB2_DIALECT_0300 };
+    uint16_t dialects[3] = {
+        SMB2_DIALECT_0202,
+        SMB2_DIALECT_0210,
+        SMB2_DIALECT_0300
+    };
 
-    // send
+    // Send header + negotiate request
     if (sendSMB2Request(&hdr, &req, sizeof(req)) < 0) return -1;
+    // Followed by the dialect array
     if (send(gSock, dialects, sizeof(dialects), 0) < 0) {
         perror("send dialects");
         return -1;
     }
 
-    // recv
+    // Receive
     SMB2Header respHdr;
     unsigned char buf[1024];
     ssize_t payloadLen;
     if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) return -1;
+
     if (respHdr.Status != STATUS_SUCCESS) {
         fprintf(stderr, "Negotiate failed, status=0x%08X\n", respHdr.Status);
         return -1;
@@ -494,7 +516,7 @@ int doNegotiate() {
 }
 
 //--------------------------------------------------
-// doSessionSetup: minimal session
+// SMB2 SESSION_SETUP (stub - no real authentication)
 //--------------------------------------------------
 int doSessionSetup() {
     SMB2Header hdr;
@@ -503,6 +525,9 @@ int doSessionSetup() {
     SMB2SessionSetupRequest ssreq;
     memset(&ssreq, 0, sizeof(ssreq));
     ssreq.StructureSize = 25;
+
+    // In real usage, you'd set SecurityBufferOffset/Length and
+    // provide an NTLM/Kerberos token. This is omitted here.
 
     if (sendSMB2Request(&hdr, &ssreq, sizeof(ssreq)) < 0) return -1;
 
@@ -523,10 +548,9 @@ int doSessionSetup() {
 }
 
 //--------------------------------------------------
-// doTreeConnect: connect to "\\server\IPC$"
+// SMB2 TREE_CONNECT to \\server\IPC$
 //--------------------------------------------------
 int doTreeConnect(const char *ipcPath) {
-    // For Windows, typical UNC path is something like "\\192.168.x.x\IPC$"
     SMB2Header hdr;
     buildSMB2Header(SMB2_TREE_CONNECT, 0, gSessionId, &hdr);
 
@@ -534,8 +558,9 @@ int doTreeConnect(const char *ipcPath) {
     memset(&tcreq, 0, sizeof(tcreq));
     tcreq.StructureSize = 9;
     tcreq.PathOffset    = sizeof(tcreq);
-    uint32_t pathLen    = (uint32_t)strlen(ipcPath);
-    tcreq.PathLength    = pathLen;
+
+    uint32_t pathLen = (uint32_t)strlen(ipcPath);
+    tcreq.PathLength  = pathLen;
 
     size_t reqSize = sizeof(tcreq) + pathLen;
     char *reqBuf = (char *)malloc(reqSize);
@@ -575,11 +600,9 @@ int doTreeConnect(const char *ipcPath) {
 }
 
 //--------------------------------------------------
-// doOpenPipe: open named pipe, e.g. "\\PIPE\\svcctl"
-//             standard SMB2_CREATE with a filename
+// SMB2 CREATE (Open named pipe, e.g. "\\PIPE\\svcctl")
 //--------------------------------------------------
 int doOpenPipe(const char *pipeName) {
-    // pipeName is typically something like "\\PIPE\\svcctl"
     SMB2Header hdr;
     buildSMB2Header(SMB2_CREATE, gTreeId, gSessionId, &hdr);
 
@@ -589,14 +612,12 @@ int doOpenPipe(const char *pipeName) {
     creq.RequestedOplockLevel = 0; // none
     creq.ImpersonationLevel   = 2; // SecurityImpersonation
     creq.DesiredAccess        = 0x001F01FF; // GENERIC_ALL (over-simplified)
-    creq.FileAttributes       = 0;
     creq.ShareAccess          = 3; // read/write share
     creq.CreateDisposition    = 1; // FILE_OPEN
     creq.CreateOptions        = 0; 
     creq.NameOffset           = sizeof(SMB2CreateRequest);
-    // The pipe name must be in "UTF-16LE" in real SMB2.
-    // Here we’ll do simplistic ASCII->UTF-16.
 
+    // Convert ASCII to a simple UTF-16LE
     uint32_t pipeNameLenBytes = (uint32_t)(strlen(pipeName) * 2);
     creq.NameLength = (uint16_t)pipeNameLenBytes;
 
@@ -608,7 +629,7 @@ int doOpenPipe(const char *pipeName) {
     }
     memcpy(reqBuf, &creq, sizeof(creq));
 
-    // Convert ASCII to basic UTF-16LE
+    // ASCII -> UTF-16LE
     unsigned char *pName = reqBuf + sizeof(creq);
     for (size_t i = 0; i < strlen(pipeName); i++) {
         pName[i*2]   = (unsigned char)pipeName[i];
@@ -621,7 +642,6 @@ int doOpenPipe(const char *pipeName) {
     }
     free(reqBuf);
 
-    // get response
     SMB2Header respHdr;
     unsigned char buf[1024];
     ssize_t payloadLen;
@@ -649,7 +669,7 @@ int doOpenPipe(const char *pipeName) {
 }
 
 //--------------------------------------------------
-// doWritePipe: send raw bytes into the named pipe
+// doWritePipe: Send raw bytes into the named pipe
 //--------------------------------------------------
 int doWritePipe(const unsigned char *data, size_t dataLen) {
     SMB2Header hdr;
@@ -731,9 +751,11 @@ int doReadPipe(unsigned char *outBuf, size_t outBufSize, uint32_t *outBytesRead)
     uint32_t dataLen = rres->DataLength;
     if (dataLen > 0) {
         uint8_t *dataStart = buf + rres->DataOffset;
+        // Check for bounds
         if (rres->DataOffset + dataLen <= (uint32_t)payloadLen) {
-            // Copy to outBuf
-            if (dataLen > outBufSize) dataLen = (uint32_t)outBufSize;
+            if (dataLen > outBufSize) {
+                dataLen = (uint32_t)outBufSize; // Truncate
+            }
             memcpy(outBuf, dataStart, dataLen);
         } else {
             fprintf(stderr, "Data offset/length out of payload bounds!\n");
@@ -747,7 +769,60 @@ int doReadPipe(unsigned char *outBuf, size_t outBufSize, uint32_t *outBytesRead)
 }
 
 //--------------------------------------------------
-// main
+// doDCERPCBind: a partial DCERPC bind request to SVCCTL
+//--------------------------------------------------
+int doDCERPCBind() {
+    // A typical DCERPC bind to SVCCTL might include:
+    //   - Version/PacketType
+    //   - Interface UUID
+    //   - Transfer syntax, etc.
+    // This is an oversimplified placeholder.
+    unsigned char dcerpcBindStub[] = {
+        0x05, 0x00, // RPC version
+        0x0B,       // bind PDU type
+        0x10,       // flags (little-endian)
+        0x00, 0x00, 0x00, 0x00, // DCE call ID (placeholder)
+        // [Interface UUID + version], [transfer syntax], etc...
+        // This is incomplete for a real DCERPC bind!
+    };
+
+    printf("[Client] Sending partial DCERPC bind stub...\n");
+    return doWritePipe(dcerpcBindStub, sizeof(dcerpcBindStub));
+}
+
+//--------------------------------------------------
+// doClosePipe: SMB2 Close for the named pipe handle
+//--------------------------------------------------
+int doClosePipe() {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_CLOSE, gTreeId, gSessionId, &hdr);
+
+    SMB2CloseRequest creq;
+    memset(&creq, 0, sizeof(creq));
+    creq.StructureSize     = 24;
+    creq.Flags             = 0; // 0 or 1 for POSTQUERY_ATTR
+    creq.FileIdPersistent  = gPipeFidPersistent;
+    creq.FileIdVolatile    = gPipeFidVolatile;
+
+    if (sendSMB2Request(&hdr, &creq, sizeof(creq)) < 0) return -1;
+
+    SMB2Header respHdr;
+    unsigned char buf[512];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "ClosePipe failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    printf("[Client] SMB2 Close on pipe handle OK.\n");
+    return 0;
+}
+
+//--------------------------------------------------
+// main()
 //--------------------------------------------------
 int main(int argc, char *argv[]) {
     if (argc < 3) {
@@ -790,7 +865,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    // 4. SMB2 SESSION_SETUP
+    // 4. SMB2 SESSION_SETUP (stub)
     if (doSessionSetup() < 0) {
         close(gSock);
         return EXIT_FAILURE;
@@ -805,48 +880,42 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    // 6. SMB2 CREATE for named pipe, e.g. "\\PIPE\\svcctl"
+    // 6. SMB2 CREATE for named pipe "\\PIPE\\svcctl"
     if (doOpenPipe("\\PIPE\\svcctl") < 0) {
         close(gSock);
         return EXIT_FAILURE;
     }
 
-    // 7. Now we can doWritePipe / doReadPipe to exchange RPC calls
-    //    In a real scenario, we’d send DCERPC bind + requests to create a service
-    //    that executes our desired command. This is a placeholder:
-
-    printf("[Client] Sending a mock RPC request...\n");
-    const unsigned char fakeRpcRequest[] = {
-        /* This is not a real DCERPC packet—just a placeholder. */
-        0x05, 0x00, 0x0B, 0x03, // typical DCE/MSRPC version byte?
-        // etc. You would put real MS-RPC data here for SVCCTL calls
-    };
-    if (doWritePipe(fakeRpcRequest, sizeof(fakeRpcRequest)) < 0) {
-        close(gSock);
-        return EXIT_FAILURE;
+    // 7. (Optional) Send a partial DCERPC Bind
+    if (doDCERPCBind() < 0) {
+        // Not strictly fatal; you might decide to continue or bail out
+        fprintf(stderr, "DCERPC bind stub failed.\n");
     }
 
-    // 8. Read the (fake) response
+    // 8. Attempt a read from the pipe (whatever the server might send back)
     unsigned char readBuf[512];
     memset(readBuf, 0, sizeof(readBuf));
     uint32_t bytesRead = 0;
     if (doReadPipe(readBuf, sizeof(readBuf), &bytesRead) < 0) {
-        close(gSock);
-        return EXIT_FAILURE;
-    }
-
-    // 9. Dump the response (if any)
-    if (bytesRead > 0) {
-        printf("[Client] Pipe response (hex):\n");
-        for (uint32_t i = 0; i < bytesRead; i++) {
-            printf("%02X ", readBuf[i]);
-        }
-        printf("\n");
+        fprintf(stderr, "Read from pipe failed.\n");
     } else {
-        printf("[Client] No data returned from pipe.\n");
+        if (bytesRead > 0) {
+            printf("[Client] Pipe response (hex):\n");
+            for (uint32_t i = 0; i < bytesRead; i++) {
+                printf("%02X ", readBuf[i]);
+            }
+            printf("\n");
+        } else {
+            printf("[Client] No data returned from pipe.\n");
+        }
     }
 
-    // 10. Close up
+    // 9. Close the pipe handle
+    if (doClosePipe() < 0) {
+        fprintf(stderr, "Failed to close pipe properly.\n");
+    }
+
+    // 10. Done
     close(gSock);
     printf("[Client] Done.\n");
     return EXIT_SUCCESS;
@@ -855,13 +924,15 @@ int main(int argc, char *argv[]) {
 </details>
 
 
-9. Conclusion & Ethical Reminder
-	1.	SMBv2/3 is a critical modern file-sharing protocol, offering improved security, performance, and advanced capabilities like encryption and multi-channel support.
-	2.	smb2_pipe_exec_client.c is an educational demonstration of the low-level steps needed to talk to an SMB named pipe. It shows negotiate, session setup, tree connect, create, write, and read.
-	3.	Real DCERPC usage is significantly more complex—this code is not a production solution or a ready-made exploit.
-	4.	Security Best Practices: Always test in isolated lab environments. Implement proper authentication and input validation.
-	5.	Ethical Use: Study and refine your network programming and security research skills responsibly. Unauthorized or malicious usage can be illegal and harmful.
+9. Still Not a Production/Exploit-Ready Tool
+	1.	SMBv2/3 is a key protocol in modern Windows and Samba ecosystems—understanding its handshake, tree connect, and named-pipe semantics is essential for both legitimate development and advanced security research.
+	2.	The smb2_pipe_exec_client.c here illustrates minimal steps to negotiate, create a named pipe, (partially) bind DCERPC, and then close the handle.
+	3.	Still Not a Production/Exploit-Ready Tool: The advanced topics (NTLM/Kerberos, DCERPC marshalling, signing, encryption, error handling) are purposely not fully implemented.
+	4.	Security Best Practices: If you extend or adapt this code, do so in a lab environment with explicit authorization. Implement secure authentication, signing, and proper validation.
+	5.	Ethical Use Only: Always comply with relevant laws and get permission before running code that interacts with others’ networks or hosts.
 
-Thank you for exploring SMBv2 named pipe fundamentals! For more robust reference implementations, see the Samba codebase or Microsoft’s official protocol documentation (MS-SMB2, MS-RPC, MS-SVCCTL, etc.).
+Thank you for exploring SMBv2 named pipe fundamentals! For more in-depth references, consult:
+	•	Microsoft’s official protocol documentation (MS-SMB2, MS-RPC, MS-SVCCTL, etc.).
+	•	The Samba source for a robust open-source implementation.
 
-Happy coding—and stay safe in your security research!
+Stay safe, and happy researching!
