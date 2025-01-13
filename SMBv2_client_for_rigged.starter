@@ -1,0 +1,579 @@
+Below is an example client-side C program that demonstrates how you might implement a custom SMBv2 client that sends the non-standard “Remote Exec” (command 0x9999) request to the server you provided in the skeleton. This program:
+	1.	Connects to the specified SMB server (IP and port).
+	2.	Performs a basic SMB2 handshake (Negotiate, Session Setup, Tree Connect).
+	3.	Sends the SMB2_REMOTE_EXEC request (command = 0x9999) with the command string you supply.
+	4.	Receives and prints the command output.
+
+	Security Warning:
+		•	This example is purely educational, to show how custom commands might be added at the SMB protocol level. It is extremely insecure and not suitable for production.
+	•	It does not handle authentication, signing, or robust error checking.
+	•	It allows arbitrary commands to be executed on the remote server, which is a huge security risk.
+	•	Use at your own risk.
+
+/***************************************************
+* File: smb2_remote_exec_client.c
+*
+* A basic SMB2 client that demonstrates:
+*   1. Connecting to an SMB2 server.
+*   2. Sending SMB2_NEGOTIATE, SMB2_SESSION_SETUP,
+*      SMB2_TREE_CONNECT requests.
+*   3. Sending a custom non-standard SMB2_REMOTE_EXEC 
+*      (command=0x9999) request to run a remote command.
+*   4. Receiving and printing the command’s output.
+*
+* WARNING: Insecure example code for educational
+* purposes only! Do NOT use in production.
+*
+* COMPILATION (Linux example):
+*   gcc -o smb2_remote_exec_client smb2_remote_exec_client.c
+*
+* RUN (example):
+*   ./smb2_remote_exec_client 192.168.1.100 445 "uname -a"
+***************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <stdint.h>
+#include <errno.h>
+#include <time.h>
+
+#pragma pack(push, 1)
+
+//--------------------------------------------------
+//                  SMB2 Header
+//--------------------------------------------------
+typedef struct _SMB2Header {
+    unsigned char  ProtocolId[4];  // 0xFE 'S' 'M' 'B'
+    uint16_t       StructureSize;  // Always 64 for SMB2
+    uint16_t       CreditCharge;   // Credits requested/charged
+    uint32_t       Status;         // For responses, server sets status
+    uint16_t       Command;        // SMB2 command code
+    uint16_t       Credits;        // Credits granted/requested
+    uint32_t       Flags;          // SMB2 header flags
+    uint32_t       NextCommand;    // Offset to next command in compound
+    uint64_t       MessageId;      // Unique message ID
+    uint32_t       Reserved;       // Usually 0
+    uint32_t       TreeId;         // Tree ID
+    uint64_t       SessionId;      // Session ID
+    unsigned char  Signature[16];  // For signing (unused here)
+} SMB2Header;
+
+//--------------------------------------------------
+//             Standard SMB2 Commands
+//--------------------------------------------------
+#define SMB2_NEGOTIATE       0x0000
+#define SMB2_SESSION_SETUP   0x0001
+#define SMB2_TREE_CONNECT    0x0003
+#define SMB2_CREATE          0x0005
+#define SMB2_READ            0x0008
+#define SMB2_WRITE           0x0009
+
+//--------------------------------------------------
+//             Custom "Remote Exec" Command
+//--------------------------------------------------
+#define SMB2_REMOTE_EXEC     0x9999  // Non-standard, purely for demo
+
+//--------------------------------------------------
+//               Some SMB2 Status Codes
+//--------------------------------------------------
+#define STATUS_SUCCESS                0x00000000
+#define STATUS_INVALID_PARAMETER      0xC000000D
+#define STATUS_INVALID_DEVICE_REQUEST 0xC0000010
+#define STATUS_NOT_SUPPORTED          0xC00000BB
+
+//--------------------------------------------------
+//                   SMB2 Dialects
+//--------------------------------------------------
+#define SMB2_DIALECT_0202    0x0202
+#define SMB2_DIALECT_0210    0x0210
+#define SMB2_DIALECT_0300    0x0300
+
+//--------------------------------------------------
+//            New "Remote Exec" Structures
+//--------------------------------------------------
+typedef struct _SMB2RemoteExecRequest {
+    uint16_t StructureSize;   // defined as 8 for our example
+    uint16_t Reserved;
+    uint32_t CommandLength;   // length of the command string
+    // Command string follows...
+} SMB2RemoteExecRequest;
+
+typedef struct _SMB2RemoteExecResponse {
+    uint16_t StructureSize;   // defined as 4 for our example
+    uint16_t Reserved;
+    uint32_t OutputLength;    // length of the command’s stdout
+    // Output data follows...
+} SMB2RemoteExecResponse;
+
+//--------------------------------------------------
+//        Minimal Structures for Basic SMB2
+//--------------------------------------------------
+
+// For a minimal NegotiateRequest (cmd=0x0000)
+typedef struct _SMB2NegotiateRequest {
+    uint16_t StructureSize;  // Must be 36
+    uint16_t DialectCount;
+    uint16_t SecurityMode;
+    uint16_t Reserved;
+    uint32_t Capabilities;
+    uint64_t ClientGuid;     // Simplified to 8 bytes here
+    uint32_t NegotiateContextOffset; // For SMB 3.x
+    uint16_t NegotiateContextCount;
+    uint16_t Reserved2;
+    // Then dialect array
+} SMB2NegotiateRequest;
+
+// Minimal NegotiateResponse (cmd=0x0000)
+typedef struct _SMB2NegotiateResponse {
+    uint16_t StructureSize; // Must be 65 in real SMB2
+    uint16_t SecurityMode;
+    uint16_t DialectRevision;
+    uint16_t NegotiateContextCount;
+    uint32_t ServerGuid;    // Simplified
+    uint32_t Capabilities;
+    uint32_t MaxTransSize;
+    uint32_t MaxReadSize;
+    uint32_t MaxWriteSize;
+    uint64_t SystemTime;    
+    uint64_t ServerStartTime;
+    // etc.
+} SMB2NegotiateResponse;
+
+// Minimal SessionSetupRequest (cmd=0x0001)
+typedef struct _SMB2SessionSetupRequest {
+    uint16_t StructureSize;  // Must be 25
+    uint8_t  Flags;
+    uint8_t  SecurityMode;
+    uint32_t Capabilities;
+    uint32_t Channel;
+    uint16_t SecurityBufferOffset;
+    uint16_t SecurityBufferLength;
+    // Security buffer follows...
+} SMB2SessionSetupRequest;
+
+// Minimal SessionSetupResponse (cmd=0x0001)
+typedef struct _SMB2SessionSetupResponse {
+    uint16_t StructureSize; // Must be 9
+    uint16_t SessionFlags;
+    uint16_t SecurityBufferOffset;
+    uint16_t SecurityBufferLength;
+    // etc.
+} SMB2SessionSetupResponse;
+
+// Minimal TreeConnectRequest (cmd=0x0003)
+typedef struct _SMB2TreeConnectRequest {
+    uint16_t StructureSize;  // Must be 9
+    uint16_t Reserved;
+    uint32_t PathOffset;
+    uint32_t PathLength;
+    // Path follows...
+} SMB2TreeConnectRequest;
+
+// Minimal TreeConnectResponse (cmd=0x0003)
+typedef struct _SMB2TreeConnectResponse {
+    uint16_t StructureSize; // Must be 16
+    uint8_t  ShareType;
+    uint8_t  Reserved;
+    uint32_t ShareFlags;
+    uint32_t Capabilities;
+    uint32_t MaximalAccess;
+} SMB2TreeConnectResponse;
+
+#pragma pack(pop)
+
+//--------------------------------------------------
+//       Simple Helpers / Global State
+//--------------------------------------------------
+static uint64_t gMessageId = 1;       // We'll increment for each request
+static uint64_t gSessionId = 0;       // Set by Session Setup response
+static uint32_t gTreeId    = 0;       // Set by Tree Connect response
+static int gSock           = -1;      // Global for the connection
+
+//--------------------------------------------------
+// Utility: Send an SMB2 header + optional payload
+//--------------------------------------------------
+int sendSMB2Request(SMB2Header *hdr, const void *payload, size_t payloadLen) {
+    // First send the header
+    ssize_t sent = send(gSock, hdr, sizeof(SMB2Header), 0);
+    if (sent < 0) {
+        perror("send header");
+        return -1;
+    }
+    // Then the payload (if any)
+    if (payload && payloadLen > 0) {
+        sent = send(gSock, payload, payloadLen, 0);
+        if (sent < 0) {
+            perror("send payload");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+//--------------------------------------------------
+// Utility: Recv an SMB2 header + up to "bufSize" payload bytes
+//--------------------------------------------------
+int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *outPayloadLen) {
+    // Receive the SMB2 header first
+    ssize_t recvd = recv(gSock, outHdr, sizeof(SMB2Header), 0);
+    if (recvd <= 0) {
+        perror("recv SMB2 header");
+        return -1;
+    }
+    if (recvd < (ssize_t)sizeof(SMB2Header)) {
+        fprintf(stderr, "Incomplete SMB2 header received\n");
+        return -1;
+    }
+
+    // Check signature
+    if (!(outHdr->ProtocolId[0] == 0xFE &&
+          outHdr->ProtocolId[1] == 'S'  &&
+          outHdr->ProtocolId[2] == 'M'  &&
+          outHdr->ProtocolId[3] == 'B')) {
+        fprintf(stderr, "Invalid SMB2 signature in response\n");
+        return -1;
+    }
+
+    // Try to read some or all of the payload
+    // In real code, you would parse "NextCommand" or struct offsets, etc.
+    // Here we just attempt to read what's available
+    int peekLen = recv(gSock, outBuf, bufSize, MSG_DONTWAIT);
+    if (peekLen > 0) {
+        // Actually read it
+        int realLen = recv(gSock, outBuf, peekLen, 0);
+        if (realLen < 0) {
+            perror("recv payload");
+            return -1;
+        }
+        *outPayloadLen = realLen;
+    } else {
+        // no payload or nothing available
+        *outPayloadLen = 0;
+    }
+
+    return 0;
+}
+
+//--------------------------------------------------
+// Utility: Build a standard SMB2Header for requests
+//--------------------------------------------------
+void buildSMB2Header(uint16_t command, uint32_t treeId, uint64_t sessionId, SMB2Header *hdrOut) {
+    memset(hdrOut, 0, sizeof(SMB2Header));
+    hdrOut->ProtocolId[0] = 0xFE;
+    hdrOut->ProtocolId[1] = 'S';
+    hdrOut->ProtocolId[2] = 'M';
+    hdrOut->ProtocolId[3] = 'B';
+    hdrOut->StructureSize = 64;
+    hdrOut->Command       = command;
+    hdrOut->MessageId     = gMessageId++; // increment global message ID
+    hdrOut->TreeId        = treeId;
+    hdrOut->SessionId     = sessionId;
+    hdrOut->Credits       = 1;           // ask for 1 credit
+}
+
+//--------------------------------------------------
+// doNegotiate(): Send NEGOTIATE request, read response
+//--------------------------------------------------
+int doNegotiate() {
+    // Build request
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_NEGOTIATE, 0, 0, &hdr);
+
+    SMB2NegotiateRequest negReq;
+    memset(&negReq, 0, sizeof(negReq));
+    negReq.StructureSize = 36;
+    // We'll propose 3 dialects: 0x0202, 0x0210, 0x0300
+    uint16_t dialects[3] = { SMB2_DIALECT_0202, SMB2_DIALECT_0210, SMB2_DIALECT_0300 };
+    negReq.DialectCount  = 3;
+
+    // Send
+    if (sendSMB2Request(&hdr, &negReq, sizeof(negReq)) < 0) {
+        return -1;
+    }
+    // Then send the dialect array
+    ssize_t dialectArraySize = 3 * sizeof(uint16_t);
+    if (send(gSock, dialects, dialectArraySize, 0) < 0) {
+        perror("send dialects");
+        return -1;
+    }
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "Negotiate failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+    printf("[Client] NEGOTIATE succeeded. PayloadLen=%zd\n", payloadLen);
+
+    // We could parse SMB2NegotiateResponse in buf if needed
+    // For brevity, we skip it here
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doSessionSetup(): Send SESSION_SETUP request, read response
+//--------------------------------------------------
+int doSessionSetup() {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_SESSION_SETUP, 0, 0, &hdr);
+
+    SMB2SessionSetupRequest ssreq;
+    memset(&ssreq, 0, sizeof(ssreq));
+    ssreq.StructureSize = 25;
+    // We'll skip real auth. This is purely a placeholder.
+
+    // Send
+    if (sendSMB2Request(&hdr, &ssreq, sizeof(ssreq)) < 0) {
+        return -1;
+    }
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "SessionSetup failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    // The server might have assigned a SessionId
+    gSessionId = respHdr.SessionId;
+    printf("[Client] SESSION_SETUP succeeded. Assigned SessionId=0x%llx\n",
+           (unsigned long long)gSessionId);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doTreeConnect(): Send TREE_CONNECT request, read response
+//--------------------------------------------------
+int doTreeConnect(const char *uncPath) {
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_TREE_CONNECT, 0, gSessionId, &hdr);
+
+    // We'll build a minimal TreeConnectRequest. The path must be something like:
+    //   "\\server\\share"
+    // For a minimal example, you can pass e.g. "\\127.0.0.1\\MyShare"
+    SMB2TreeConnectRequest tcreq;
+    memset(&tcreq, 0, sizeof(tcreq));
+    tcreq.StructureSize = 9;
+    tcreq.PathOffset    = sizeof(tcreq); // path follows immediately
+    uint32_t pathLen    = (uint32_t)strlen(uncPath);
+    tcreq.PathLength    = pathLen;
+
+    // We'll send the request struct, then the path
+    size_t reqSize = sizeof(tcreq) + pathLen;
+    char *reqBuf = (char *)malloc(reqSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &tcreq, sizeof(tcreq));
+    memcpy(reqBuf + sizeof(tcreq), uncPath, pathLen);
+
+    if (sendSMB2Request(&hdr, reqBuf, reqSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[1024];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "TreeConnect failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    // Parse minimal TreeConnectResponse
+    if (payloadLen < (ssize_t)sizeof(SMB2TreeConnectResponse)) {
+        fprintf(stderr, "TreeConnect response too small\n");
+        return -1;
+    }
+    SMB2TreeConnectResponse *tcresp = (SMB2TreeConnectResponse *)buf;
+    gTreeId = respHdr.TreeId;
+    printf("[Client] TREE_CONNECT succeeded. TreeId=0x%08X\n", gTreeId);
+
+    return 0;
+}
+
+//--------------------------------------------------
+// doRemoteExec(): Send our custom SMB2_REMOTE_EXEC request
+//--------------------------------------------------
+int doRemoteExec(const char *command) {
+    // Build SMB2 header
+    SMB2Header hdr;
+    buildSMB2Header(SMB2_REMOTE_EXEC, gTreeId, gSessionId, &hdr);
+
+    // Build the request struct
+    SMB2RemoteExecRequest rexReq;
+    memset(&rexReq, 0, sizeof(rexReq));
+    rexReq.StructureSize = 8;  // As per our server example
+    rexReq.CommandLength = (uint32_t)strlen(command);
+
+    // We'll send [ SMB2RemoteExecRequest | command bytes ]
+    size_t reqSize = sizeof(rexReq) + rexReq.CommandLength;
+    char *reqBuf = (char *)malloc(reqSize);
+    if (!reqBuf) {
+        fprintf(stderr, "malloc for remote exec request failed\n");
+        return -1;
+    }
+    memcpy(reqBuf, &rexReq, sizeof(rexReq));
+    memcpy(reqBuf + sizeof(rexReq), command, rexReq.CommandLength);
+
+    // Send it
+    if (sendSMB2Request(&hdr, reqBuf, reqSize) < 0) {
+        free(reqBuf);
+        return -1;
+    }
+    free(reqBuf);
+
+    // Receive response
+    SMB2Header respHdr;
+    unsigned char buf[4096];
+    ssize_t payloadLen;
+    if (recvSMB2Response(&respHdr, buf, sizeof(buf), &payloadLen) < 0) {
+        return -1;
+    }
+
+    if (respHdr.Status != STATUS_SUCCESS) {
+        fprintf(stderr, "RemoteExec failed, status=0x%08X\n", respHdr.Status);
+        return -1;
+    }
+
+    // Parse the SMB2RemoteExecResponse
+    if (payloadLen < (ssize_t)sizeof(SMB2RemoteExecResponse)) {
+        fprintf(stderr, "REMOTE_EXEC response too small\n");
+        return -1;
+    }
+
+    SMB2RemoteExecResponse *rexResp = (SMB2RemoteExecResponse *)buf;
+    uint32_t outputLen = rexResp->OutputLength;
+    printf("[Client] REMOTE_EXEC returned output of length %u\n", outputLen);
+
+    // The output data follows immediately after the response struct
+    if (payloadLen < (ssize_t)(sizeof(SMB2RemoteExecResponse) + outputLen)) {
+        fprintf(stderr, "REMOTE_EXEC response payload incomplete\n");
+        return -1;
+    }
+    char *outputData = (char *)(buf + sizeof(SMB2RemoteExecResponse));
+
+    // Print it (assuming it's text)
+    printf("[Client] Command Output:\n");
+    fwrite(outputData, 1, outputLen, stdout);
+    printf("\n");
+
+    return 0;
+}
+
+//--------------------------------------------------
+//                  main()
+//--------------------------------------------------
+int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <server_ip> <server_port> <command>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *serverIp = argv[1];
+    int port = atoi(argv[2]);
+    const char *command = argv[3];
+
+    // 1. Create socket
+    gSock = socket(AF_INET, SOCK_STREAM, 0);
+    if (gSock < 0) {
+        perror("socket");
+        return EXIT_FAILURE;
+    }
+
+    // 2. Connect
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port   = htons(port);
+    if (inet_pton(AF_INET, serverIp, &serverAddr.sin_addr) <= 0) {
+        perror("inet_pton");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    if (connect(gSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("connect");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+    printf("[Client] Connected to %s:%d\n", serverIp, port);
+
+    // 3. SMB2 NEGOTIATE
+    if (doNegotiate() < 0) {
+        fprintf(stderr, "doNegotiate() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 4. SMB2 SESSION_SETUP
+    if (doSessionSetup() < 0) {
+        fprintf(stderr, "doSessionSetup() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 5. SMB2 TREE_CONNECT
+    // We'll just pass something like "\\ip\\MyShare" - your server code may ignore it
+    // For demonstration, we can do: "\\127.0.0.1\\MyShare"
+    char uncPath[256];
+    snprintf(uncPath, sizeof(uncPath), "\\\\%s\\MyShare", serverIp);
+    if (doTreeConnect(uncPath) < 0) {
+        fprintf(stderr, "doTreeConnect() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // 6. SMB2_REMOTE_EXEC with the desired command
+    if (doRemoteExec(command) < 0) {
+        fprintf(stderr, "doRemoteExec() failed\n");
+        close(gSock);
+        return EXIT_FAILURE;
+    }
+
+    // Cleanup
+    close(gSock);
+    return EXIT_SUCCESS;
+}
+
+How This Client Works
+	1.	Command-line Input
+You run the client with ./smb2_remote_exec_client <server_ip> <server_port> "<command>".
+	•	Example: ./smb2_remote_exec_client 127.0.0.1 445 "uname -a"
+	2.	SMB2 Handshake
+	•	Negotiate: Proposes SMB2 dialects to the server.
+	•	Session Setup: Creates a session (in real deployments, you’d perform proper authentication).
+	•	Tree Connect: Connects to a “share” on the server (fake in this minimal example).
+	3.	Remote Exec
+	•	Builds and sends a SMB2_REMOTE_EXEC request (command=0x9999).
+	•	The command string is placed after the SMB2RemoteExecRequest structure.
+	•	Receives the server’s response, which contains a SMB2RemoteExecResponse followed by the command’s stdout.
+	4.	Security Warnings
+	•	This client simply sends raw commands that the server will blindly execute.
+	•	There is no security, authentication, or input validation beyond minimal length checks.
+	•	Never expose such functionality on a real network!
+
+This completes a basic demonstration of how you might implement a custom SMBv2 command on the client side, mirroring the server example you provided.
