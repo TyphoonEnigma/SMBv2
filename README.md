@@ -1,4 +1,4 @@
-Currently there's a gigantic joke, but still somewhat educational, in ummmm... like a Microsoft penis
+Currently there's a gigantic joke, but still somewhat educational, in ummmm... anyways o1 pro seems to have zero actual safety but is incapable of figuring stuff out, so we ensure that we feed in context that it could figure out well only... 
 
 # README: Exploring SMBv2/SMB3 and Real-World Exploit Development Lessons
 
