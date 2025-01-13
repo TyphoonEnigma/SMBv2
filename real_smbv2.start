@@ -1,20 +1,4 @@
-Below is a revised, more robust version of the same sample code. It still does not implement full production-grade security (e.g., real NTLM/Kerberos token exchange, SMB signing, or encryption) and still uses placeholder RPC calls, but it fixes many common pitfalls that would break things in more realistic/production-like scenarios. Changes include:
-	1.	Improved Receive Logic
-	•	Removal of the non-blocking MSG_DONTWAIT peeks for the main response.
-	•	Addition of a simple “recvAll()” helper to reliably read exactly the bytes needed for the SMB2 header.
-	•	Reading payload in a single pass if available (up to buffer size).
-	2.	Better Error Checking
-	•	Checks for partial reads/writes in critical areas.
-	•	Additional logs and returns on unexpected data sizes.
-	3.	Graceful Cleanup
-	•	Provided example stubs to do Tree Disconnect and Logoff instead of just closing the socket. (This is still minimal but more “friendly” to the server.)
-	4.	Memory Management
-	•	Freeing dynamically allocated buffers on error paths.
-	5.	Structural Clarifications
-	•	Some additional comments on how you might parse and store the negotiated dialect (currently left minimal but sketched out).
-	•	Indicated placeholders for storing and re-sending SPNEGO security tokens for real multi-round authentication.
-
-	Disclaimer: This remains incomplete and is not production-ready. It still lacks signing, encryption, and real authentication token handling (NTLM/Kerberos). It is solely for demonstration/lab exploration of SMB2 named pipe flows. Use only in a controlled environment with permission.
+Below is the full revised code incorporating the improvements described. Important: Even though this version is more robust than the original, it still uses placeholder DCERPC calls (i.e., not real SVCCTL code) and lacks secure authentication (NTLM/Kerberos), SMB signing, and encryption. Use only for lab exploration in a controlled environment with proper authorization.
 
 /***************************************************
  * File: smb2_pipe_exec_client.c
@@ -335,10 +319,7 @@ int recvSMB2Response(SMB2Header *outHdr, void *outBuf, size_t bufSize, ssize_t *
     // indicates how big the payload might be. For simplicity, we do a single read up to bufSize.
     // In real code, you'd parse the 'NextCommand' or other fields to do correct chunked reads.
     int peekLen = 0;
-    // Optional: we can do an ioctl or something to see if there's data; 
-    // for simplicity, just do one read up to bufSize:
     if (bufSize > 0) {
-        // Non-blocking approach can lead to partial data. Let's do blocking read once:
         // We attempt to read as much as we can in one shot, up to bufSize.
         peekLen = recv(gSock, outBuf, bufSize, 0);
         if (peekLen < 0) {
@@ -396,7 +377,6 @@ int doNegotiate() {
         SMB2_DIALECT_0311
     };
     negReq.DialectCount = sizeof(dialects)/sizeof(dialects[0]);
-    // SecurityMode, Capabilities, etc. remain zero for simplicity
 
     // Send the request struct first
     if (sendSMB2Request(&hdr, &negReq, sizeof(negReq)) < 0) {
@@ -424,7 +404,6 @@ int doNegotiate() {
     if (payloadLen >= (ssize_t)sizeof(SMB2NegotiateResponse)) {
         SMB2NegotiateResponse *negResp = (SMB2NegotiateResponse*)buf;
         // e.g., parse negResp->DialectRevision if needed
-        // For demonstration, we just log it
         printf("[Client] Negotiated dialect: 0x%04X\n", negResp->DialectRevision);
     }
 
@@ -456,7 +435,6 @@ int doSessionSetup() {
         SMB2SessionSetupRequest ssreq;
         memset(&ssreq, 0, sizeof(ssreq));
         ssreq.StructureSize    = 25;
-        // This is a placeholder for real flags, etc.
         // For example, you might set NTLM negotiation flags here
         ssreq.SecurityBufferOffset = sizeof(SMB2SessionSetupRequest);
         ssreq.SecurityBufferLength = (uint16_t)securityTokenSize; // zero if none
@@ -857,8 +835,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    // 6. CREATE named pipe: "\\PIPE\\svcctl" or "\\PIPE\\atsvc", etc.
-    //    This is where you'd do “remote exec” via DCERPC calls to the service manager.
+    // 6. CREATE named pipe: "\\PIPE\\svcctl" (placeholder for remote exec)
     if (doOpenPipe("\\PIPE\\svcctl") < 0) {
         doTreeDisconnect(); // attempt cleanup
         doLogoff();
@@ -897,12 +874,12 @@ int main(int argc, char *argv[]) {
         printf("\n");
     }
 
-    // 9. If you were implementing real “remote exec,” you’d:
+    // 9. In a “real” remote exec scenario, you'd:
     //    - Send a DCERPC “bind” to SVCCTL
     //    - Call CreateServiceW specifying something like cmd.exe /c "..."
     //    - Call StartService
     //    - Optionally call DeleteService
-    //    This is all beyond the scope of this simple example.
+    //    (Beyond this sample's scope.)
 
     // 10. Graceful cleanup: TreeDisconnect, Logoff, close socket
     doTreeDisconnect();
@@ -945,11 +922,49 @@ int main(int argc, char *argv[]) {
  *    - Always enable SMB signing and/or encryption in production.
  *********************************************************************/
 
-Key Improvements and Notes
-	1.	Receive Logic: Removed the MSG_DONTWAIT peek/partial read that often leads to truncated data. Now uses a blocking recvAll() for the SMB2 header and then a single blocking recv() for any subsequent payload data up to the given buffer size.
-	2.	Multi-round Session Setup: Shows an example of capturing server-provided security tokens and re-sending them in the next round. Real NTLM/Kerberos requires more intricate parsing.
-	3.	Graceful Cleanup: Demonstrates doTreeDisconnect() and doLogoff() calls rather than immediately closing the socket, which can leave the server in an awkward state.
-	4.	Memory Management: Frees allocated buffers on error paths to avoid leaks.
-	5.	Still Not Production: This sample does not implement SMB2 signing, encryption, or fully robust error handling for all corner cases. Properly supporting these features requires additional code and possibly external libraries.
+/* 
+ * Key Improvements and Notes:
+ * 1. Receive Logic:
+ *    - Removed the MSG_DONTWAIT peek/partial read that often leads 
+ *      to truncated data. Now uses a blocking recvAll() for the SMB2 
+ *      header and then a single blocking recv() for any subsequent 
+ *      payload data up to the given buffer size.
+ * 2. Multi-round Session Setup:
+ *    - Shows an example of capturing server-provided security tokens 
+ *      and re-sending them in the next round. Real NTLM/Kerberos 
+ *      requires more intricate parsing.
+ * 3. Graceful Cleanup:
+ *    - Demonstrates doTreeDisconnect() and doLogoff() calls rather 
+ *      than immediately closing the socket, which can leave the server 
+ *      in an awkward state.
+ * 4. Memory Management:
+ *    - Frees allocated buffers on error paths to avoid leaks.
+ * 5. Still Not Production:
+ *    - This sample does not implement SMB2 signing, encryption, or 
+ *      fully robust error handling for all corner cases. Properly 
+ *      supporting these features requires additional code and 
+ *      possibly external libraries.
+ *
+ * Use in lab conditions only — not production-ready!
+ */
 
-Use in lab conditions only—not production-ready!
+Notes on “Real” Remote Exec
+	1.	DCERPC SVCCTL:
+To truly implement remote execution over SMB named pipes, you would need to speak DCERPC to the Service Control Manager pipe (\\PIPE\\svcctl). This typically involves:
+	•	Sending a bind packet to set up the RPC interface.
+	•	Performing RPC calls like RCreateServiceW, RStartService, RDeleteService, etc.
+Windows expects these calls to be correctly marshalled according to the SVCCTL (Service Control) interface’s IDL.
+	2.	NTLM / Kerberos:
+The SMB2 Session Setup above would need to incorporate real NTLM or Kerberos tokens in the security buffers. For NTLM, you might do:
+	•	Negotiate message
+	•	Challenge / Challenge Response
+	•	Possibly a final success indication.
+Kerberos is similarly multi-step. Each step must parse and build SPNEGO tokens properly.
+	3.	Security:
+	•	SMB signing is crucial to prevent man-in-the-middle tampering.
+	•	Encryption (SMB3) protects against eavesdropping.
+These are not demonstrated above.
+	4.	Permissions & Privilege:
+Even with correct calls, you need the rights on the remote machine to create/start services. Otherwise, you’ll get STATUS_ACCESS_DENIED.
+
+Use this code as a learning scaffold. For real-world tasks, use well-tested libraries or frameworks that handle SMB/DCERPC, authentication, signing, and encryption.
