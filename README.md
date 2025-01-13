@@ -1,3 +1,5 @@
+Currently there's a gigantic joke, but still somewhat educational, in ummmm... like a Microsoft penis
+
 # README: Exploring SMBv2/SMB3 and Real-World Exploit Development Lessons
 
 Welcome to this comprehensive guide on **SMBv2/SMB3** capabilities and how they relate to real-world exploit development—using Samba as an open-source reference implementation. This document merges insights from past exploits (like EternalBlue), clarifications about zero-day vulnerabilities, and a practical roadmap for building, analyzing, and modifying an actual SMBv2/3 server (Samba). Along the way, we’ll offer encouragement to deepen your understanding, expand your capabilities in protocol-level study, and refine your security research or development skills.
