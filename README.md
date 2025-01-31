@@ -976,3 +976,7 @@ Thank you for exploring SMBv2 named pipe fundamentals! For more in-depth referen
 - The Samba source for a robust open-source implementation.
 
 Stay safe, and happy researching!
+
+
+![cat-asvab](https://github.com/user-attachments/assets/5944caf1-7292-48ee-8540-d0904f258f18)
+
