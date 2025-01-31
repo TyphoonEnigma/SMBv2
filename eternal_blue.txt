@@ -24,3 +24,31 @@ Short answer: **No.** While EternalBlue **did** exploit SMBv1 (specifically the 
 - **Does it use a pipe?** No—unlike some sibling exploits (e.g., EternalRomance), it does **not** hinge on a named pipe handle.
 
 If you are researching the specific mechanics, focus on how EternalBlue constructs its transaction (trans2) requests and how it achieves an out-of-bounds write in the Windows kernel’s SRV driver without going through a pipe.
+
+
+**Short Answer**  
+No. While EternalBlue did exploit SMBv1 (specifically the “trans2” sub-protocol) to achieve remote code execution, it **did not** hinge on a named pipe handle for triggering the vulnerability.  
+
+---
+  
+## Comparison and Key Details
+
+1. **The Core Vulnerability (MS17-010)**  
+   - EternalBlue exploits a memory corruption flaw in the Microsoft SMBv1 server—particularly in functions like `Srv!SrvOs2FeaListToNt` or `Srv!SrvTransaction2Dispatch`.  
+   - By sending specially crafted “trans2” (transaction) packets, the attacker can overwrite data beyond intended boundaries in kernel space (within the `SRV` driver).
+
+2. **Named Pipe vs. Trans2**
+   - **Named Pipe (e.g., EternalRomance):** Other SMB exploits (like EternalRomance) use a named pipe—often something like `\pipe\SRVSVC`—to keep a pipe handle open in the SMB server and then manipulate buffer offsets to achieve code execution.  
+   - **EternalBlue’s Approach:** EternalBlue directly abuses an out-of-bounds write via SMBv1 “trans2” commands. While SMBv1 supports named pipes, EternalBlue’s core exploitation method does not rely on obtaining or manipulating a pipe handle.
+
+3. **Why the Confusion?**  
+   - EternalBlue, EternalRomance, EternalChampion, and EternalSynergy were leaked together (Equation Group’s FuzzBunch) and all target SMB on Windows.  
+   - Each exploit, however, has a slightly different method. EternalBlue is primarily a “trans2” exploit, whereas some siblings rely on named pipes.
+
+---
+  
+### Summary
+
+- **Does EternalBlue use an SMBv2 pipe or named pipe approach?**  
+  **No.** It relies on a “trans2” out-of-bounds write in the SMBv1 server driver (SRV).  
+- For research, focus on how the malicious SMB “trans2” requests allow EternalBlue to escalate privileges in kernel space—rather than going through a pipe-based handle.
