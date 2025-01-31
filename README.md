@@ -1,142 +1,178 @@
-Below is the updated README, where we’ve replaced the final section’s heading with “Still Not a Production/Exploit-Ready Tool” while keeping all other content unchanged. The rest of the text is identical, except for this heading adjustment.
+Below is the **complete** README with the final section’s heading changed to "**Still Not a Production/Exploit-Ready Tool**." Everything else is kept exactly as in the original text (including all code and explanatory sections) so you have a precise, updated document.
 
-Updated README
+---
 
-SMBv2 Named Pipe Client & Lessons in Protocol-Level Development
+# SMBv2 Named Pipe Client & Lessons in Protocol-Level Development
 
-Welcome! This repository now contains an improved demonstration client (smb2_pipe_exec_client.c) that showcases how one might connect to an SMBv2/SMB3 server (over TCP 445), perform essential SMB2 handshake steps (negotiate, session setup, tree connect), open a named pipe (e.g., \\PIPE\\svcctl), send rudimentary DCERPC bind stubs, and close the pipe. Although improved, it still does not implement real authentication or full DCERPC-based remote service creation/management logic. This remains primarily an educational code sample, intended to illustrate how raw SMBv2 named pipe communication and partial RPC stubbing might work.
+Welcome! This repository now contains an improved demonstration client (`smb2_pipe_exec_client.c`) that showcases how one might connect to an SMBv2/SMB3 server (over TCP 445), perform essential SMB2 handshake steps (negotiate, session setup, tree connect), open a named pipe (e.g., `\\PIPE\\svcctl`), send rudimentary DCERPC bind stubs, and close the pipe. Although improved, it still does not implement real authentication or full DCERPC-based remote service creation/management logic. This remains primarily an educational code sample, intended to illustrate how raw SMBv2 named pipe communication and partial RPC stubbing might work.
 
-	Disclaimer: This repository is not a complete exploit-development kit. It is not a production-ready tool. It does not fully parse or marshal real DCERPC data, sign sessions, or authenticate securely. If you are exploring how advanced Windows or Samba-based RCE might be achieved, consider this only a starting point for learning the wire protocol—not a final or polished solution.
+> **Disclaimer**: This repository is not a complete exploit-development kit. It is not a production-ready tool. It does not fully parse or marshal real DCERPC data, sign sessions, or authenticate securely. If you are exploring how advanced Windows or Samba-based RCE might be achieved, consider this only a starting point for learning the wire protocol—not a final or polished solution.
 
-Table of Contents
-	1.	Purpose & Context
-	2.	Big Picture: SMBv2/3 and Real-World Exploits
-	3.	About smb2_pipe_exec_client.c
-	1.	Workflow Overview
-	2.	Capabilities & Limitations
-	3.	Security Warnings
-	4.	Building & Running the Client
-	5.	Exploring Further: Samba and Named Pipes
-	6.	Real Exploit Development Lessons
-	7.	Overview of SMBv2/3 Capabilities
-	8.	Full Source Code
-	9.	Still Not a Production/Exploit-Ready Tool
+## Table of Contents
 
-1. Purpose & Context
+1. [Purpose & Context](#purpose--context)  
+2. [Big Picture: SMBv2/3 and Real-World Exploits](#big-picture-smbv23-and-real-world-exploits)  
+3. [About smb2_pipe_exec_client.c](#about-smb2_pipe_exec_clientc)  
+   1. [Workflow Overview](#workflow-overview)  
+   2. [Capabilities & Limitations](#capabilities--limitations)  
+   3. [Security Warnings](#security-warnings)  
+4. [Building & Running the Client](#building--running-the-client)  
+5. [Exploring Further: Samba and Named Pipes](#exploring-further-samba-and-named-pipes)  
+6. [Real Exploit Development Lessons](#real-exploit-development-lessons)  
+7. [Overview of SMBv2/3 Capabilities](#overview-of-smbv23-capabilities)  
+8. [Full Source Code](#full-source-code)  
+9. [Still Not a Production/Exploit-Ready Tool](#still-not-a-productionexploit-ready-tool)
 
-Why this code?
-This example demonstrates how to initiate and maintain a client-side SMB2 session with a server (Windows or Samba) and how to open a named pipe (like the Windows Service Control Manager pipe \\PIPE\\svcctl). In more advanced usage, sending specially crafted DCERPC packets to the Service Control Manager can lead to remote service creation and execution. However, the code here does not fully implement the necessary DCERPC logic—this is left as an exercise for security researchers who want to explore deeper protocol-level details.
+---
 
-Who should read this?
-	•	Security researchers learning the fundamentals of Windows networking and SMBv2/SMB3 at the packet level.
-	•	Developers who need an introduction to raw SMB pipe-based communication and (partial) DCERPC stubs.
-	•	Anyone curious about how real exploits (like EternalBlue) might build upon low-level SMB communication.
+<a name="purpose--context"></a>
+## 1. Purpose & Context
 
-	Note: No zero-day or unpatched vulnerability is presented here. This is purely educational.
+### Why this code?
 
-2. Big Picture: SMBv2/3 and Real-World Exploits
-	•	SMBv2/3 drastically improves performance and security over older SMBv1. It adds message signing, encryption, and robust flow-control.
-	•	Named Pipes over SMB are a common Microsoft RPC transport, used for administrative tasks (service management, registry edits, etc.).
-	•	Real exploit development often involves more complex vulnerabilities, like memory corruption (e.g., EternalBlue) or logical flaws in how servers handle requests. Modern SMB stacks (including Samba’s) are significantly more hardened than they once were.
+This example demonstrates how to initiate and maintain a client-side SMB2 session with a server (Windows or Samba) and how to open a named pipe (like the Windows Service Control Manager pipe `\\PIPE\\svcctl`). In more advanced usage, sending specially crafted DCERPC packets to the Service Control Manager can lead to remote service creation and execution. However, the code here does not fully implement the necessary DCERPC logic—this is left as an exercise for security researchers who want to explore deeper protocol-level details.
 
-3. About smb2_pipe_exec_client.c
+### Who should read this?
 
-3.1 Workflow Overview
-	1.	Socket Connection to the target server on TCP port 445.
-	2.	SMB2 Negotiate: Dialect negotiation (e.g., 0x0202, 0x0210, 0x0300).
-	3.	SMB2 Session Setup: Minimal handshake (in real life, this involves NTLM or Kerberos).
-	4.	SMB2 Tree Connect to \\<server>\IPC$.
-	5.	SMB2 Create: Open a named pipe (e.g., \\PIPE\\svcctl).
-	6.	(Optional) DCERPC Bind: A partial demonstration of sending a DCERPC bind request to the SVCCTL interface (though incomplete).
-	7.	SMB2 Write/Read: Exchange data with the pipe.
-	8.	SMB2 Close: Properly close the pipe/file handle.
+- Security researchers learning the fundamentals of Windows networking and SMBv2/SMB3 at the packet level.  
+- Developers who need an introduction to raw SMB pipe-based communication and (partial) DCERPC stubs.  
+- Anyone curious about how real exploits (like EternalBlue) might build upon low-level SMB communication.
 
-3.2 Capabilities & Limitations
-	•	Capabilities:
-	•	Demonstrates minimal usage of SMB2 headers to do open/read/write on a named pipe.
-	•	Includes additional sample code stubbing out a DCERPC bind call.
-	•	Properly closes the pipe with an SMB2 Close, cleaning up the handle.
-	•	Limitations:
-	•	No real authentication: The code doesn’t do a legitimate NTLM/Kerberos handshake.
-	•	No signing or encryption: Production SMB sessions often require signing or encryption for security.
-	•	No full DCERPC: This only includes a placeholder bind stub for demonstration. Real SVCCTL calls require additional IDL-based marshalling, which is non-trivial.
-	•	Minimal error handling for complex corner cases.
+> **Note**: No zero-day or unpatched vulnerability is presented here. This is purely educational.
 
-3.3 Security Warnings
-	1.	Incomplete Auth: Do not assume this code can safely authenticate to real environments—it’s purely a “stub.”
-	2.	RPC Stubs: Real DCERPC requires IDL definitions, alignment rules, etc. The demonstration is incomplete and should not be used for production.
-	3.	Ethical Use: Only run code like this in lab/test networks where you have full permission. Unauthorized usage, especially if combined with real DCERPC exploit logic, can be illegal and unethical.
+---
 
-4. Building & Running the Client
+<a name="big-picture-smbv23-and-real-world-exploits"></a>
+## 2. Big Picture: SMBv2/3 and Real-World Exploits
+- **SMBv2/3** drastically improves performance and security over older SMBv1. It adds message signing, encryption, and robust flow-control.  
+- **Named Pipes** over SMB are a common Microsoft RPC transport, used for administrative tasks (service management, registry edits, etc.).  
+- **Real exploit development** often involves more complex vulnerabilities, like memory corruption (e.g., EternalBlue) or logical flaws in how servers handle requests. Modern SMB stacks (including Samba’s) are significantly more hardened than they once were.
+
+---
+
+<a name="about-smb2_pipe_exec_clientc"></a>
+## 3. About smb2_pipe_exec_client.c
+
+<a name="workflow-overview"></a>
+### 3.1 Workflow Overview
+
+1. **Socket Connection** to the target server on TCP port 445.  
+2. **SMB2 Negotiate**: Dialect negotiation (e.g., 0x0202, 0x0210, 0x0300).  
+3. **SMB2 Session Setup**: Minimal handshake (in real life, this involves NTLM or Kerberos).  
+4. **SMB2 Tree Connect** to `\\<server>\IPC$`.  
+5. **SMB2 Create**: Open a named pipe (e.g., `\\PIPE\\svcctl`).  
+6. **(Optional) DCERPC Bind**: A partial demonstration of sending a DCERPC bind request to the SVCCTL interface (though incomplete).  
+7. **SMB2 Write/Read**: Exchange data with the pipe.  
+8. **SMB2 Close**: Properly close the pipe/file handle.
+
+<a name="capabilities--limitations"></a>
+### 3.2 Capabilities & Limitations
+
+**Capabilities**:
+- Demonstrates minimal usage of SMB2 headers to do open/read/write on a named pipe.  
+- Includes additional sample code stubbing out a DCERPC bind call.  
+- Properly closes the pipe with an SMB2 Close, cleaning up the handle.
+
+**Limitations**:
+- **No real authentication**: The code doesn’t do a legitimate NTLM/Kerberos handshake.  
+- **No signing or encryption**: Production SMB sessions often require signing or encryption for security.  
+- **No full DCERPC**: This only includes a placeholder bind stub for demonstration. Real SVCCTL calls require additional IDL-based marshalling, which is non-trivial.  
+- **Minimal error handling** for complex corner cases.
+
+<a name="security-warnings"></a>
+### 3.3 Security Warnings
+
+1. **Incomplete Auth**: Do not assume this code can safely authenticate to real environments—it’s purely a “stub.”  
+2. **RPC Stubs**: Real DCERPC requires IDL definitions, alignment rules, etc. The demonstration is incomplete and should not be used for production.  
+3. **Ethical Use**: Only run code like this in lab/test networks where you have full permission. Unauthorized usage, especially if combined with real DCERPC exploit logic, can be illegal and unethical.
+
+---
+
+<a name="building--running-the-client"></a>
+## 4. Building & Running the Client
 
 The following steps apply to Linux-like environments with a C toolchain:
-	1.	Install Dependencies (e.g., on Ubuntu/Debian):
 
-sudo apt-get update
-sudo apt-get install -y build-essential
+1. **Install Dependencies** (e.g., on Ubuntu/Debian):
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y build-essential
+   ```
 
+2. **Compile**:
+   ```bash
+   gcc -o smb2_pipe_exec_client smb2_pipe_exec_client.c
+   ```
 
-	2.	Compile:
+3. **Run**:
+   ```bash
+   ./smb2_pipe_exec_client <server_ip> <server_port>
+   ```
+   - Example:
+     ```bash
+     ./smb2_pipe_exec_client 192.168.1.10 445
+     ```
+   - The client will attempt a minimal negotiation, session setup, tree connect, and named pipe open. Then it will send a fake or partial DCERPC bind request and try to read a response.
 
-gcc -o smb2_pipe_exec_client smb2_pipe_exec_client.c
+---
 
+<a name="exploring-further-samba-and-named-pipes"></a>
+## 5. Exploring Further: Samba and Named Pipes
 
-	3.	Run:
+To see a production-grade SMBv2/3 implementation in open-source form, **Samba** is an excellent reference:
 
-./smb2_pipe_exec_client <server_ip> <server_port>
+1. **Clone and Build Samba**:
+   ```bash
+   git clone https://gitlab.com/samba-team/samba.git
+   cd samba
+   ./configure --enable-debug
+   make -j$(nproc)
+   ```
 
-	•	Example:
+2. **Enable SMBv2/3 in smb.conf**:
+   ```ini
+   [global]
+       server min protocol = SMB2_02
+       server max protocol = SMB3
+   ```
 
-./smb2_pipe_exec_client 192.168.1.10 445
+3. **Compare** the code under `source3/smbd/smb2_*` with this client to see the comprehensive logic a production server implements (authentication, encryption, signing, dialect negotiation, error handling, etc.).
 
+---
 
-	•	The client will attempt a minimal negotiation, session setup, tree connect, and named pipe open. Then it will send a fake or partial DCERPC bind request and try to read a response.
+<a name="real-exploit-development-lessons"></a>
+## 6. Real Exploit Development Lessons
 
-5. Exploring Further: Samba and Named Pipes
+1. **Complexity**: Real vulnerabilities often arise from intricate logic or subtle boundary checks, not from simplistic “magic bullet” commands.  
+2. **DCERPC in Depth**: Achieving RCE via named pipes typically involves DCERPC calls to SVCCTL or other privileged interfaces. You need correct marshalling, alignment, and authentication steps.  
+3. **Reverse-Engineering**: Tools like IDA Pro or Ghidra help find memory corruption or logic flaws in SMB server implementations.  
+4. **Authentication & Signing**: Properly implemented SMB security (NTLM/Kerberos, signing, encryption) significantly raises the bar for attackers.
 
-To see a production-grade SMBv2/3 implementation in open-source form, Samba is an excellent reference:
-	1.	Clone and Build Samba:
+---
 
-git clone https://gitlab.com/samba-team/samba.git
-cd samba
-./configure --enable-debug
-make -j$(nproc)
+<a name="overview-of-smbv23-capabilities"></a>
+## 7. Overview of SMBv2/3 Capabilities
 
-
-	2.	Enable SMBv2/3 in smb.conf:
-
-[global]
-    server min protocol = SMB2_02
-    server max protocol = SMB3
-
-
-	3.	Compare the code under source3/smbd/smb2_* with this client to see the comprehensive logic a production server implements (authentication, encryption, signing, dialect negotiation, error handling, etc.).
-
-6. Real Exploit Development Lessons
-	1.	Complexity: Real vulnerabilities often arise from intricate logic or subtle boundary checks, not from simplistic “magic bullet” commands.
-	2.	DCERPC in Depth: Achieving RCE via named pipes typically involves DCERPC calls to SVCCTL or other privileged interfaces. You need correct marshalling, alignment, and authentication steps.
-	3.	Reverse-Engineering: Tools like IDA Pro or Ghidra help find memory corruption or logic flaws in SMB server implementations.
-	4.	Authentication & Signing: Properly implemented SMB security (NTLM/Kerberos, signing, encryption) significantly raises the bar for attackers.
-
-7. Overview of SMBv2/3 Capabilities
-
-Modern SMB stacks offer:
-	•	Larger reads/writes for improved performance.
-	•	Credit-based flow control.
-	•	Compound/pipelined requests.
-	•	Optional encryption (introduced in SMB 3.x).
-	•	Pre-auth integrity checks in SMB 3.1.1 to prevent tampering.
+Modern SMB stacks offer:  
+- Larger reads/writes for improved performance.  
+- Credit-based flow control.  
+- Compound/pipelined requests.  
+- Optional encryption (introduced in SMB 3.x).  
+- Pre-auth integrity checks in SMB 3.1.1 to prevent tampering.
 
 A thorough understanding is critical for both deploying SMB securely and for advanced security research.
 
-8. Full Source Code
+---
 
-Below is the complete smb2_pipe_exec_client.c including unchanged parts, plus improvements such as a partial DCERPC bind request demonstration and a SMB2 Close command. This is still not production-ready or a full exploit kit.
+<a name="full-source-code"></a>
+## 8. Full Source Code
+
+Below is the complete `smb2_pipe_exec_client.c` including unchanged parts, plus improvements such as a partial DCERPC bind request demonstration and a SMB2 Close command. This is still not production-ready or a full exploit kit.
 
 <details>
 <summary>Click to expand the entire code</summary>
 
-
+```c
 /***************************************************
 * File: smb2_pipe_exec_client.c
 *
@@ -920,19 +956,23 @@ int main(int argc, char *argv[]) {
     printf("[Client] Done.\n");
     return EXIT_SUCCESS;
 }
-
+```
 </details>
 
+---
 
-9. Still Not a Production/Exploit-Ready Tool
-	1.	SMBv2/3 is a key protocol in modern Windows and Samba ecosystems—understanding its handshake, tree connect, and named-pipe semantics is essential for both legitimate development and advanced security research.
-	2.	The smb2_pipe_exec_client.c here illustrates minimal steps to negotiate, create a named pipe, (partially) bind DCERPC, and then close the handle.
-	3.	Still Not a Production/Exploit-Ready Tool: The advanced topics (NTLM/Kerberos, DCERPC marshalling, signing, encryption, error handling) are purposely not fully implemented.
-	4.	Security Best Practices: If you extend or adapt this code, do so in a lab environment with explicit authorization. Implement secure authentication, signing, and proper validation.
-	5.	Ethical Use Only: Always comply with relevant laws and get permission before running code that interacts with others’ networks or hosts.
+<a name="still-not-a-productionexploit-ready-tool"></a>
+## 9. Still Not a Production/Exploit-Ready Tool
+
+1. **SMBv2/3** is a key protocol in modern Windows and Samba ecosystems—understanding its handshake, tree connect, and named-pipe semantics is essential for both legitimate development and advanced security research.  
+2. The `smb2_pipe_exec_client.c` here illustrates minimal steps to negotiate, create a named pipe, (partially) bind DCERPC, and then close the handle.  
+3. **Still Not a Production/Exploit-Ready Tool**: The advanced topics (NTLM/Kerberos, DCERPC marshalling, signing, encryption, error handling) are purposely not fully implemented.  
+4. **Security Best Practices**: If you extend or adapt this code, do so in a lab environment with explicit authorization. Implement secure authentication, signing, and proper validation.  
+5. **Ethical Use Only**: Always comply with relevant laws and get permission before running code that interacts with others’ networks or hosts.
 
 Thank you for exploring SMBv2 named pipe fundamentals! For more in-depth references, consult:
-	•	Microsoft’s official protocol documentation (MS-SMB2, MS-RPC, MS-SVCCTL, etc.).
-	•	The Samba source for a robust open-source implementation.
+
+- Microsoft’s official protocol documentation (MS-SMB2, MS-RPC, MS-SVCCTL, etc.).  
+- The Samba source for a robust open-source implementation.
 
 Stay safe, and happy researching!
